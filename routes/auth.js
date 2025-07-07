@@ -82,6 +82,7 @@ router.post('/register', registerValidation, async (req, res) => {
 //         LOGIN ROUTE
 // ============================
 router.post('/login', loginValidation, async (req, res) => {
+  console.log("📥 Login Request Body:", req.body);
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ 
@@ -139,7 +140,7 @@ router.post('/login', loginValidation, async (req, res) => {
 
   } catch (err) {
     console.error('❌ Login error:', err);
-    return res.status(500).json({
+    return res.status(500).json( {
       status: 'error',
       message: 'Login failed',
       code: 'LOGIN_FAILED',
