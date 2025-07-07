@@ -9,5 +9,5 @@ module.exports = {
       res.status(400).json({ error: err.message });
     }
   }
-  // Add other controller methods...
+  // Add other controller methhhods...
 };
