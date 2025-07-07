@@ -83,6 +83,7 @@ router.post('/register', registerValidation, async (req, res) => {
 // ============================
 router.post('/login', loginValidation, async (req, res) => {
   console.log("📥 Login Request Body:", req.body);
+
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ 
