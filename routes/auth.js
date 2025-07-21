@@ -5,7 +5,140 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
 const { registerValidation, loginValidation } = require('../validators/authValidators');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 
+// Email transporter configuration
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST,
+  port: process.env.EMAIL_PORT,
+  secure: false, // true for 465, false for other ports
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASSWORD
+  }
+});
+
+// ============================
+//     FORGOT PASSWORD ROUTE
+// ============================
+router.post('/forgot-password', async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    // 1. Check if user exists
+    const userResult = await pool.query(
+      'SELECT * FROM tbl_users WHERE LOWER(email) = LOWER($1)', 
+      [email]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Email not found',
+        code: 'EMAIL_NOT_FOUND'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // 2. Generate reset token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hour from now
+
+    // 3. Save token to database
+    await pool.query(
+      'UPDATE tbl_users SET reset_token = $1, reset_token_expiry = $2 WHERE user_id = $3',
+      [resetToken, resetTokenExpiry, user.user_id]
+    );
+
+    // 4. Create reset URL
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+
+    // 5. Send email
+    const mailOptions = {
+      from: `"Vehicle Dispatch System" <${process.env.EMAIL_FROM}>`,
+      to: user.email,
+      subject: 'Password Reset Request',
+      html: `
+        <h2>Password Reset Request</h2>
+        <p>You requested to reset your password for Vehicle Dispatch System.</p>
+        <p>Please click the link below to reset your password:</p>
+        <a href="${resetUrl}">Reset Password</a>
+        <p>This link will expire in 1 hour.</p>
+        <p>If you didn't request this, please ignore this email.</p>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Password reset instructions sent to your email'
+    });
+
+  } catch (err) {
+    console.error('❌ Forgot password error:', err);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to process password reset',
+      code: 'RESET_FAILED'
+    });
+  }
+});
+
+// ============================
+//      RESET PASSWORD ROUTE
+// ============================
+router.post('/forgot-password', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Email is required',
+      code: 'EMAIL_REQUIRED'
+    });
+  }
+
+  try {
+    const userResult = await pool.query(
+      'SELECT * FROM tbl_users WHERE email = $1', 
+      [email.toLowerCase()] // Case-insensitive search
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(200).json({ 
+        status: 'success', // Don't reveal if email exists or not
+        message: 'If this email exists, a reset link has been sent'
+      });
+    }
+
+    const user = userResult.rows[0];
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hour
+
+    await pool.query(
+      'UPDATE tbl_users SET reset_token = $1, reset_token_expires = $2 WHERE user_id = $3',
+      [resetToken, resetTokenExpiry, user.user_id]
+    );
+
+    // Send email (implementation depends on your email service)
+    // ...
+
+    return res.status(200).json({
+      status: 'success',
+      message: 'Password reset instructions sent'
+    });
+
+  } catch (err) {
+    console.error('Password reset error:', err);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Internal server error'
+    });
+  }
+});
 // ============================
 //        REGISTER ROUTE
 // ============================
