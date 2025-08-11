@@ -1,24 +1,17 @@
+// In your db.js
 const { Pool } = require('pg');
 require('dotenv').config();
 
 const pool = new Pool({
-  host: process.env.DB_host,
-  port: parseInt(process.env.DB_port),
-  user: process.env.DB_user,
-  password: process.env.DB_password,
-  database: process.env.DB_database,
-  ssl: {
-    rejectUnauthorized: false // ✅ Required for Railway SSL
-  }
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } // Required for Railway
 });
 
-pool.connect()
-  .then(client => {
-    console.log('✅ Successfully connected to PostgreSQL database');
-    client.release();
-  })
+// Simple test query
+pool.query('SELECT NOW()')
+  .then(() => console.log('✅ Connected to new database'))
   .catch(err => {
-    console.error('❌ DATABASE CONNECTION ERROR:', err);
+    console.error('❌ Connection failed:', err);
     process.exit(1);
   });
 

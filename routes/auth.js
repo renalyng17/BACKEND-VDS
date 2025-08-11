@@ -118,7 +118,7 @@ router.post('/register', async (req, res) => {
       maxAge: 24 * 60 * 60 * 1000 // 24 hours
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       message: 'Registration successful',
       user: newUser.rows[0],
       token
@@ -126,7 +126,7 @@ router.post('/register', async (req, res) => {
 
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ message: 'Registration failed' });
+    return res.status(500).json({ message: 'Registration failed', error: error.message });
   }
 });
 // ============================
@@ -191,7 +191,7 @@ router.post('/login', loginValidation, async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ Login error:', err);
+    console.error(' Login error:', err);
     return res.status(500).json( {
       status: 'error',
       message: 'Login failed',
