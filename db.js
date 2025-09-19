@@ -1,18 +1,24 @@
-// In your db.js
+// db.js
 const { Pool } = require('pg');
 require('dotenv').config();
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // Required for Railway
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_DATABASE,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// Simple test query
-pool.query('SELECT NOW()')
-  .then(() => console.log('✅ Connected to new database'))
-  .catch(err => {
-    console.error('❌ Connection failed:', err);
-    process.exit(1);
-  });
+// Test connection
+pool.connect((err, client, release) => {
+  if (err) {
+    console.error('Database connection error:', err.stack);
+  } else {
+    console.log('Database connected successfully');
+    release();
+  }
+});
 
 module.exports = pool;
