@@ -141,6 +141,7 @@
     "safe-buffer": "^5.2.1",
     "safer-buffer": "^2.1.2",
     "send": "^1.2.0",
+    "sequelize": "^6.37.7",
     "serve-static": "^2.2.0",
     "setprototypeof": "^1.2.0",
     "sha.js": "^2.4.11",
@@ -193,8 +194,8 @@
     "typescript": "^5.8.3"
   },
   "scripts": {
-  "dev": "nodemon server.js",
-  "start": "node server.js"
+    "dev": "nodemon server.js",
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
