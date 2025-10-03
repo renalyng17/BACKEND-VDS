@@ -29,7 +29,6 @@ let archivedDrivers = [];
 let drivers = [];
 let vehicles = [];
 
-
 // Routes
 
 // Health check
@@ -37,118 +36,202 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK' });
 });
 
+// ========================
+// VEHICLE ROUTES
+// ========================
+
+// Get all active vehicles
+app.get('/api/vehicles', (req, res) => {
+  res.json(vehicles.filter(v => !v.archivedAt));
+});
+
+// Create new vehicle
+app.post('/api/vehicles', (req, res) => {
+  try {
+    const { vehicleType, plateNo, capacity, fuelType, fleetCard, rfid } = req.body;
+
+    // Validate required fields
+    if (!vehicleType || !plateNo || !capacity || !fuelType) {
+      return res.status(400).json({
+        error: "Missing required fields: vehicleType, plateNo, capacity, fuelType"
+      });
+    }
+
+    // Normalize plate number
+    const normalizedPlateNo = plateNo.trim().toUpperCase();
+
+    // Check for duplicate plate number
+    const existingVehicle = vehicles.find(
+      v => v.plateNo && v.plateNo.toUpperCase() === normalizedPlateNo && !v.archivedAt
+    );
+
+    if (existingVehicle) {
+      return res.status(409).json({ error: "Vehicle with this plate number already exists" });
+    }
+
+    const newVehicle = {
+      id: Date.now(),
+      vehicleType: vehicleType.trim(),
+      plateNo: normalizedPlateNo,
+      capacity: parseInt(capacity),
+      fuelType: fuelType,
+      fleetCard: fleetCard || "Unavailable",
+      rfid: rfid || "Unavailable",
+      createdAt: new Date().toISOString()
+    };
+
+    vehicles.push(newVehicle);
+    res.status(201).json(newVehicle);
+
+  } catch (error) {
+    console.error("Create vehicle error:", error);
+    res.status(500).json({ error: "Failed to create vehicle" });
+  }
+});
+
+// Archive vehicle
+app.patch('/api/vehicles/:id/archive', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const vehicleIndex = vehicles.findIndex(v => v.id === id && !v.archivedAt);
+
+    if (vehicleIndex === -1) {
+      return res.status(404).json({ error: "Vehicle not found or already archived" });
+    }
+
+    vehicles[vehicleIndex].archivedAt = new Date().toISOString();
+    res.json(vehicles[vehicleIndex]);
+
+  } catch (error) {
+    console.error("Archive vehicle error:", error);
+    res.status(500).json({ error: "Failed to archive vehicle" });
+  }
+});
+
+// Restore vehicle
+app.patch('/api/vehicles/:id/restore', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const vehicleIndex = vehicles.findIndex(v => v.id === id && v.archivedAt);
+
+    if (vehicleIndex === -1) {
+      return res.status(404).json({ error: "Archived vehicle not found" });
+    }
+
+    delete vehicles[vehicleIndex].archivedAt;
+    res.json(vehicles[vehicleIndex]);
+
+  } catch (error) {
+    console.error("Restore vehicle error:", error);
+    res.status(500).json({ error: "Failed to restore vehicle" });
+  }
+});
+
+// Get archived vehicles
+app.get('/api/vehicles/archived', (req, res) => {
+  res.json(vehicles.filter(v => v.archivedAt));
+});
+
+// ========================
+// DRIVER ROUTES
+// ========================
+
+// Get all active drivers
+app.get('/api/drivers', (req, res) => {
+  res.json(drivers.filter(d => !d.archivedAt));
+});
+
+// Create new driver
+app.post('/api/drivers', (req, res) => {
+  try {
+    const { name, contact, email } = req.body;
+
+    if (!name || !contact || !email) {
+      return res.status(400).json({ error: "Missing required fields: name, contact, email" });
+    }
+
+    // Check for duplicate email
+    const existingDriver = drivers.find(
+      d => d.email && d.email.toLowerCase() === email.toLowerCase() && !d.archivedAt
+    );
+
+    if (existingDriver) {
+      return res.status(409).json({ error: "Driver with this email already exists" });
+    }
+
+    const newDriver = {
+      id: Date.now(),
+      name: name.trim(),
+      contact: contact.trim(),
+      email: email.toLowerCase().trim(),
+      is_assigned: true,
+      createdAt: new Date().toISOString()
+    };
+
+    drivers.push(newDriver);
+    res.status(201).json(newDriver);
+
+  } catch (error) {
+    console.error("Create driver error:", error);
+    res.status(500).json({ error: "Failed to create driver" });
+  }
+});
+
+// Archive driver
+app.patch('/api/drivers/:id/archive', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const driverIndex = drivers.findIndex(d => d.id === id && !d.archivedAt);
+
+    if (driverIndex === -1) {
+      return res.status(404).json({ error: "Driver not found or already archived" });
+    }
+
+    drivers[driverIndex].archivedAt = new Date().toISOString();
+    drivers[driverIndex].is_assigned = false;
+    res.json(drivers[driverIndex]);
+
+  } catch (error) {
+    console.error("Archive driver error:", error);
+    res.status(500).json({ error: "Failed to archive driver" });
+  }
+});
+
+// Restore driver
+app.patch('/api/drivers/:id/restore', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const driverIndex = drivers.findIndex(d => d.id === id && d.archivedAt);
+
+    if (driverIndex === -1) {
+      return res.status(404).json({ error: "Archived driver not found" });
+    }
+
+    delete drivers[driverIndex].archivedAt;
+    drivers[driverIndex].is_assigned = true;
+    res.json(drivers[driverIndex]);
+
+  } catch (error) {
+    console.error("Restore driver error:", error);
+    res.status(500).json({ error: "Failed to restore driver" });
+  }
+});
+
+// Get archived drivers
+app.get('/api/drivers/archived', (req, res) => {
+  res.json(drivers.filter(d => d.archivedAt));
+});
+
+// ========================
+// REQUEST ROUTES
+// ========================
+
 // Get all requests
 app.get('/api/requests', (req, res) => {
   res.json(requests);
 });
 
-// Create a new request
-app.post('/api/requests', (req, res) => {
-  try {
-    const newRequest = {
-      id: Date.now(),
-      ...req.body,
-      status: "Pending",
-      date: new Date().toISOString().split('T')[0]
-    };
-
-    requests.push(newRequest);
-
-    // Create a notification for the new request
-    const notification = {
-      id: Date.now(),
-      requestId: newRequest.id,
-      type: "new_request",
-      message: `New travel request to ${newRequest.destination}`,
-      timestamp: new Date().toISOString(),
-      read: false
-    };
-
-    notifications.push(notification);
-
-    res.status(201).json(newRequest);
-  } catch (error) {
-    console.error("Create request error:", error);
-    res.status(500).json({ error: "Failed to create request" });
-  }
-});
-
-// Get all notifications
-app.get('/api/notifications', (req, res) => {
-  res.json(notifications);
-});
-
-// Update notification as read
-app.put('/api/notifications/:id', (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    const notification = notifications.find(n => n.id === id);
-
-    if (notification) {
-      notification.read = true;
-      res.json(notification);
-    } else {
-      res.status(404).json({ error: "Notification not found" });
-    }
-  } catch (error) {
-    console.error("Update notification error:", error);
-    res.status(500).json({ error: "Failed to update notification" });
-  }
-});
-
-// Update request status (Accept/Decline)
-app.put('/api/requests/:id', (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    const request = requests.find(r => r.id === id);
-
-    if (request) {
-      const { status, driver, vehicleType, plateNo, reason } = req.body;
-
-      request.status = status;
-      request.processedDate = new Date().toISOString().split('T')[0];
-
-      if (status === "Accepted") {
-        request.driver = driver;
-        request.vehicleType = vehicleType;
-        request.plateNo = plateNo;
-      } else if (status === "Declined") {
-        request.reason = reason;
-      }
-
-      // Create a notification for the status update
-      const notification = {
-        id: Date.now(),
-        requestId: request.id,
-        type: "status_update",
-        message: `Request to ${request.destination} has been ${status}`,
-        timestamp: new Date().toISOString(),
-        read: false
-      };
-
-      notifications.push(notification);
-
-      res.json(request);
-    } else {
-      res.status(404).json({ error: "Request not found" });
-    }
-  } catch (error) {
-    console.error("Update request error:", error);
-    res.status(500).json({ error: "Failed to update request" });
-  }
-});
-
-// Get available drivers
-app.get('/api/drivers', (req, res) => {
-  res.json(drivers.filter(d => !d.archivedAt));
-});
-
-// Get available vehicles
-app.get('/api/vehicles', (req, res) => {
-  res.json(vehicles.filter(v => !v.archivedAt));
-});
-
-// Get a specific request by ID
+// Get single request
 app.get('/api/requests/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id);
@@ -165,21 +248,143 @@ app.get('/api/requests/:id', (req, res) => {
   }
 });
 
-// Delete a request
+// Create new request
+app.post('/api/requests', (req, res) => {
+  try {
+    const { destination, names, requestingOffice, fromDate, fromTime, toDate, toTime } = req.body;
+
+    // Validate required fields
+    if (!destination || !names || !requestingOffice || !fromDate || !toDate) {
+      return res.status(400).json({ 
+        error: "Missing required fields: destination, names, requestingOffice, fromDate, toDate" 
+      });
+    }
+
+    const newRequest = {
+      id: Date.now(),
+      destination: destination.trim(),
+      names: Array.isArray(names) ? names : [names],
+      requestingOffice: requestingOffice.trim(),
+      fromDate,
+      fromTime: fromTime || "",
+      toDate,
+      toTime: toTime || "",
+      status: "Pending",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    requests.push(newRequest);
+
+    // Create notification
+    const notification = {
+      id: Date.now(),
+      requestId: newRequest.id,
+      type: "new_request",
+      message: `New travel request to ${newRequest.destination} from ${newRequest.requestingOffice}`,
+      read: false,
+      createdAt: new Date().toISOString()
+    };
+
+    notifications.push(notification);
+
+    res.status(201).json(newRequest);
+
+  } catch (error) {
+    console.error("Create request error:", error);
+    res.status(500).json({ error: "Failed to create request" });
+  }
+});
+
+// Update request status
+app.put('/api/requests/:id/status', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const requestIndex = requests.findIndex(r => r.id === id);
+
+    if (requestIndex === -1) {
+      return res.status(404).json({ error: "Request not found" });
+    }
+
+    const { status, driver_name, contact_no, vehicle_type, plate_no, reason_for_decline } = req.body;
+
+    // Update request
+    requests[requestIndex].status = status;
+    requests[requestIndex].updatedAt = new Date().toISOString();
+
+    if (status === "Accepted") {
+      requests[requestIndex].driver = driver_name;
+      requests[requestIndex].driverContact = contact_no;
+      requests[requestIndex].vehicleType = vehicle_type;
+      requests[requestIndex].plateNo = plate_no;
+    } else if (status === "Declined") {
+      requests[requestIndex].reason = reason_for_decline;
+    }
+
+    // Create status notification
+    const notification = {
+      id: Date.now(),
+      requestId: id,
+      type: "status_update",
+      message: `Request to ${requests[requestIndex].destination} has been ${status.toLowerCase()}`,
+      read: false,
+      createdAt: new Date().toISOString()
+    };
+
+    notifications.push(notification);
+
+    res.json(requests[requestIndex]);
+
+  } catch (error) {
+    console.error("Update request error:", error);
+    res.status(500).json({ error: "Failed to update request" });
+  }
+});
+
+// Delete request
 app.delete('/api/requests/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    const index = requests.findIndex(r => r.id === id);
+    const requestIndex = requests.findIndex(r => r.id === id);
 
-    if (index !== -1) {
-      requests.splice(index, 1);
-      res.json({ message: "Request deleted successfully" });
-    } else {
-      res.status(404).json({ error: "Request not found" });
+    if (requestIndex === -1) {
+      return res.status(404).json({ error: "Request not found" });
     }
+
+    requests.splice(requestIndex, 1);
+    res.json({ message: "Request deleted successfully" });
+
   } catch (error) {
     console.error("Delete request error:", error);
     res.status(500).json({ error: "Failed to delete request" });
+  }
+});
+
+// ========================
+// NOTIFICATION ROUTES
+// ========================
+
+// Get all notifications
+app.get('/api/notifications', (req, res) => {
+  res.json(notifications);
+});
+
+// Mark notification as read
+app.put('/api/notifications/:id/read', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const notificationIndex = notifications.findIndex(n => n.id === id);
+
+    if (notificationIndex === -1) {
+      return res.status(404).json({ error: "Notification not found" });
+    }
+
+    notifications[notificationIndex].read = true;
+    res.json(notifications[notificationIndex]);
+
+  } catch (error) {
+    console.error("Mark notification as read error:", error);
+    res.status(500).json({ error: "Failed to update notification" });
   }
 });
 
@@ -190,190 +395,8 @@ app.get('/api/notifications/unread/count', (req, res) => {
     res.json({ count });
   } catch (error) {
     console.error("Get unread count error:", error);
-    res.status(500).json({ error: "Failed to get unread notifications count" });
+    res.status(500).json({ error: "Failed to get unread count" });
   }
-});
-
-// ✅ FIXED: Create Vehicle — with validation and duplicate check
-app.post('/api/vehicles', (req, res) => {
-  try {
-    const { vehicleType, plateNo, capacity, fuelType, fleetCard, rfid } = req.body;
-
-    // Validate required fields
-    if (!vehicleType || !plateNo || !capacity || !fuelType) {
-      return res.status(400).json({
-        error: "Missing required fields: vehicleType, plateNo, capacity, fuelType"
-      });
-    }
-
-    // Normalize plate number for comparison
-    const normalizedPlateNo = plateNo.trim().toUpperCase();
-
-    // Check for duplicate among non-archived vehicles
-    const existing = vehicles.find(
-      v => v.plateNo && v.plateNo.trim().toUpperCase() === normalizedPlateNo && !v.archivedAt
-    );
-
-    if (existing) {
-      return res.status(409).json({ error: "Vehicle with this plate number already exists." });
-    }
-
-    // Parse capacity safely
-    const parsedCapacity = parseInt(capacity, 10);
-    if (isNaN(parsedCapacity)) {
-      return res.status(400).json({ error: "Invalid capacity value" });
-    }
-
-    const newVehicle = {
-      id: Date.now(),
-      vehicleType: vehicleType.trim(),
-      plateNo: normalizedPlateNo,
-      capacity: parsedCapacity,
-      fuelType: fuelType.trim(),
-      fleetCard: (fleetCard || "").trim(), // default to empty string
-      rfid: (rfid || "").trim(),           // default to empty string
-    };
-
-    vehicles.push(newVehicle);
-    console.log("✅ Vehicle created:", newVehicle);
-    res.status(201).json(newVehicle);
-
-  } catch (error) {
-    console.error("🚨 Create vehicle error:", error);
-    res.status(500).json({ error: "Failed to create vehicle" });
-  }
-});
-
-// ✅ FIXED: Create Driver — with validation
-app.post('/api/drivers', (req, res) => {
-  try {
-    const { name, contact, email } = req.body;
-
-    if (!name || !contact || !email) {
-      return res.status(400).json({ error: "Missing required fields: name, contact, email" });
-    }
-
-    const newDriver = {
-      id: Date.now(),
-      name: name.trim(),
-      contact: contact.trim(),
-      email: email.trim(),
-      status: "Active"
-    };
-
-    drivers.push(newDriver);
-    console.log("✅ Driver created:", newDriver);
-    res.status(201).json(newDriver);
-  } catch (error) {
-    console.error("🚨 Create driver error:", error);
-    res.status(500).json({ error: "Failed to create driver" });
-  }
-});
-
-// ✅ FIXED: Archive Vehicle
-app.patch('/api/vehicles/:id/archive', (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    const vehicleIndex = vehicles.findIndex(v => v.id === id);
-
-    if (vehicleIndex === -1) {
-      return res.status(404).json({ error: "Vehicle not found" });
-    }
-
-    const vehicle = { ...vehicles[vehicleIndex] };
-    vehicle.archivedAt = new Date().toISOString();
-
-    archivedVehicles.push(vehicle);
-    vehicles.splice(vehicleIndex, 1);
-
-    console.log("📦 Vehicle archived:", vehicle);
-    res.json(vehicle);
-  } catch (error) {
-    console.error("🚨 Archive vehicle error:", error);
-    res.status(500).json({ error: "Failed to archive vehicle" });
-  }
-});
-
-// ✅ FIXED: Archive Driver
-app.patch('/api/drivers/:id/archive', (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    const driverIndex = drivers.findIndex(d => d.id === id);
-
-    if (driverIndex === -1) {
-      return res.status(404).json({ error: "Driver not found" });
-    }
-
-    const driver = { ...drivers[driverIndex] };
-    driver.archivedAt = new Date().toISOString();
-
-    archivedDrivers.push(driver);
-    drivers.splice(driverIndex, 1);
-
-    console.log("📦 Driver archived:", driver);
-    res.json(driver);
-  } catch (error) {
-    console.error("🚨 Archive driver error:", error);
-    res.status(500).json({ error: "Failed to archive driver" });
-  }
-});
-
-// ✅ FIXED: Restore Vehicle
-app.patch('/api/vehicles/:id/restore', (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    const vehicleIndex = archivedVehicles.findIndex(v => v.id === id);
-
-    if (vehicleIndex === -1) {
-      return res.status(404).json({ error: "Archived vehicle not found" });
-    }
-
-    const vehicle = { ...archivedVehicles[vehicleIndex] };
-    delete vehicle.archivedAt;
-
-    vehicles.push(vehicle);
-    archivedVehicles.splice(vehicleIndex, 1);
-
-    console.log("↩️ Vehicle restored:", vehicle);
-    res.json(vehicle);
-  } catch (error) {
-    console.error("🚨 Restore vehicle error:", error);
-    res.status(500).json({ error: "Failed to restore vehicle" });
-  }
-});
-
-// ✅ FIXED: Restore Driver
-app.patch('/api/drivers/:id/restore', (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    const driverIndex = archivedDrivers.findIndex(d => d.id === id);
-
-    if (driverIndex === -1) {
-      return res.status(404).json({ error: "Archived driver not found" });
-    }
-
-    const driver = { ...archivedDrivers[driverIndex] };
-    delete driver.archivedAt;
-
-    drivers.push(driver);
-    archivedDrivers.splice(driverIndex, 1);
-
-    console.log("↩️ Driver restored:", driver);
-    res.json(driver);
-  } catch (error) {
-    console.error("🚨 Restore driver error:", error);
-    res.status(500).json({ error: "Failed to restore driver" });
-  }
-});
-
-// ✅ Get Archived Vehicles
-app.get('/api/vehicles/archived', (req, res) => {
-  res.json(archivedVehicles);
-});
-
-// ✅ Get Archived Drivers
-app.get('/api/drivers/archived', (req, res) => {
-  res.json(archivedDrivers);
 });
 
 // Mount the auth router (if exists)

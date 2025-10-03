@@ -1,181 +1,382 @@
-// backend/routes/requests.js
 const express = require("express");
-const client = require("../db");
+const pool = require("../db");
+const jwt = require("jsonwebtoken");
 
 const router = express.Router();
 
-// GET all requests
-router.get("/", async (req, res) => {
+// ============================
+//     AUTHENTICATION MIDDLEWARE
+// ============================
+const authenticateToken = (req, res, next) => {
+  const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
+  
+  if (!token) {
+    return res.status(401).json({ error: "Access token required" });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: "Invalid or expired token" });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// ============================
+//        GET ALL REQUESTS
+// ============================
+router.get('/', authenticateToken, async (req, res) => {
   try {
-    const result = await client.query(`
+    console.log('📥 Fetching requests...');
+    
+    const result = await pool.query(`
       SELECT 
-        request_id,
+        request_id as id,
         user_id,
         departure_time,
         arrival_time,
         destination,
-        trip_duration_days,
         status,
-        passenger_names,
-        requesting_office,
-        driver_name,
-        contact_no,
-        email,
-        vehicle_type,
-        plate_no,
-        capacity,
-        fuel_type,
+        passenger_names as names,
+        requesting_office as "requestingOffice",
+        driver_name as driver,
+        contact_no as "driverContact",
+        vehicle_type as "vehicleType",
+        plate_no as "plateNo",
         created_at,
         updated_at
       FROM tbl_requests
       ORDER BY created_at DESC
     `);
 
-    // Format response for frontend
-    const formattedRequests = result.rows.map((row) => ({
-      id: row.request_id,
-      user_id: row.user_id,
-      fromDate: row.departure_time.toISOString().split("T")[0],
-      fromTime: row.departure_time.toISOString().split("T")[1].slice(0, 5),
-      toDate: row.arrival_time.toISOString().split("T")[0],
-      toTime: row.arrival_time.toISOString().split("T")[1].slice(0, 5),
-      destination: row.destination,
-      trip_duration_days: row.trip_duration_days,
-      status: row.status,
-      names: row.passenger_names || [],
-      requestingOffice: row.requesting_office,
-      driver: row.driver_name,
-      driverContact: row.contact_no,
-      email: row.email,
-      vehicleType: row.vehicle_type,
-      plateNo: row.plate_no,
-      capacity: row.capacity,
-      fuelType: row.fuel_type,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+    // Format dates for frontend
+    const formatted = result.rows.map(row => ({
+      ...row,
+      fromDate: row.departure_time ? row.departure_time.toISOString().split('T')[0] : null,
+      fromTime: row.departure_time ? row.departure_time.toISOString().split('T')[1]?.slice(0, 5) : null,
+      toDate: row.arrival_time ? row.arrival_time.toISOString().split('T')[0] : null,
+      toTime: row.arrival_time ? row.arrival_time.toISOString().split('T')[1]?.slice(0, 5) : null,
     }));
 
-    res.json(formattedRequests);
+    console.log(`✅ Found ${result.rows.length} requests`);
+    
+    return res.status(200).json({
+      status: 'success',
+      data: formatted
+    });
+
   } catch (error) {
-    console.error("Error fetching requests:", error);
-    res.status(500).json({ message: "Failed to fetch requests" });
+    console.error("❌ Fetch requests error:", error);
+    
+    return res.status(500).json({ 
+      status: 'error',
+      message: "Failed to fetch requests",
+      code: 'FETCH_REQUESTS_FAILED'
+    });
   }
 });
-// PUT /requests/:id/status
-router.put("/:id/status", async (req, res) => {
-  const { status, reason_for_decline, driver_name, contact_no, vehicle_type, plate_no } = req.body;
 
-  const query = `
-    UPDATE tbl_requests 
-    SET 
-      status = $1,
-      reason_for_decline = $2,
-      driver_name = $3,
-      contact_no = $4,
-      vehicle_type = $5,
-      plate_no = $6,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE request_id = $7
-    RETURNING *
-  `;
-  const values = [status, reason_for_decline, driver_name, contact_no, vehicle_type, plate_no, req.params.id];
-
-  const result = await client.query(query, values);
-  res.json(result.rows[0]);
-});
-
-// POST create new request
-router.post("/", async (req, res) => {
+// ============================
+//        GET SINGLE REQUEST
+// ============================
+router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    const {
-      user_id,
-      departure_time,
-      arrival_time,
-      destination,
-      trip_duration_days,
-      passenger_names,
-      requesting_office,
-      status = "Pending",
-      reason_for_decline,
-      driver_name,
-      contact_no,
-      email,
-      vehicle_type,
-      plate_no,
-      capacity,
-      fuel_type,
-    } = req.body;
+    const { id } = req.params;
 
-    // Insert into tbl_requests
-    const query = `
-      INSERT INTO tbl_requests (
+    console.log(`📥 Fetching request ID: ${id}`);
+    
+    const result = await pool.query(
+      `SELECT 
+        request_id as id,
         user_id,
         departure_time,
         arrival_time,
         destination,
-        trip_duration_days,
         status,
-        reason_for_decline,
-        passenger_names,
-        requesting_office,
-        driver_name,
-        contact_no,
-        email,
-        vehicle_type,
-        plate_no,
-        capacity,
-        fuel_type
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
-      ) RETURNING *
-    `;
+        passenger_names as names,
+        requesting_office as "requestingOffice",
+        driver_name as driver,
+        contact_no as "driverContact",
+        vehicle_type as "vehicleType",
+        plate_no as "plateNo",
+        created_at,
+        updated_at
+       FROM tbl_requests 
+       WHERE request_id = $1`,
+      [id]
+    );
 
-    const values = [
-      user_id,
-      new Date(departure_time),
-      new Date(arrival_time),
-      destination,
-      trip_duration_days,
-      status,
-      reason_for_decline || null,
-      passenger_names || [],
-      requesting_office,
-      driver_name || null,
-      contact_no || null,
-      email || null,
-      vehicle_type || null,
-      plate_no || null,
-      capacity || null,
-      fuel_type || null,
-    ];
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        status: 'error',
+        message: "Request not found",
+        code: 'REQUEST_NOT_FOUND'
+      });
+    }
 
-    const result = await client.query(query, values);
-
-    const newRequest = result.rows[0];
-
-    // Format response for frontend
+    const request = result.rows[0];
     const formatted = {
-      ...newRequest,
-      fromDate: newRequest.departure_time.toISOString().split("T")[0],
-      fromTime: newRequest.departure_time.toISOString().split("T")[1].slice(0, 5),
-      toDate: newRequest.arrival_time.toISOString().split("T")[0],
-      toTime: newRequest.arrival_time.toISOString().split("T")[1].slice(0, 5),
-      names: newRequest.passenger_names || [],
-      requestingOffice: newRequest.requesting_office,
-      status: newRequest.status,
-      driver: newRequest.driver_name,
-      driverContact: newRequest.contact_no,
-      email: newRequest.email,
-      vehicleType: newRequest.vehicle_type,
-      plateNo: newRequest.plate_no,
-      capacity: newRequest.capacity,
-      fuelType: newRequest.fuel_type,
+      ...request,
+      fromDate: request.departure_time ? request.departure_time.toISOString().split('T')[0] : null,
+      fromTime: request.departure_time ? request.departure_time.toISOString().split('T')[1]?.slice(0, 5) : null,
+      toDate: request.arrival_time ? request.arrival_time.toISOString().split('T')[0] : null,
+      toTime: request.arrival_time ? request.arrival_time.toISOString().split('T')[1]?.slice(0, 5) : null,
     };
 
-    res.status(201).json(formatted);
+    return res.status(200).json({
+      status: 'success',
+      data: formatted
+    });
+
   } catch (error) {
-    console.error("Error creating request:", error);
-    res.status(500).json({ message: "Failed to create request" });
+    console.error("❌ Fetch request error:", error);
+    
+    return res.status(500).json({ 
+      status: 'error',
+      message: "Failed to fetch request",
+      code: 'FETCH_REQUEST_FAILED'
+    });
+  }
+});
+
+// ============================
+//        CREATE REQUEST
+// ============================
+router.post('/', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const { 
+      departure_time, 
+      arrival_time, 
+      destination, 
+      requesting_office, 
+      passenger_names 
+    } = req.body;
+
+    console.log("📥 Create Request:", req.body);
+
+    // Validate required fields
+    if (!departure_time || !arrival_time || !destination || !requesting_office) {
+      return res.status(400).json({ 
+        status: 'error',
+        message: "Missing required fields: departure_time, arrival_time, destination, requesting_office",
+        code: 'VALIDATION_ERROR'
+      });
+    }
+
+    await client.query('BEGIN');
+
+    // Create the request
+    const requestResult = await client.query(
+      `INSERT INTO tbl_requests (
+        user_id,
+        departure_time,
+        arrival_time,
+        destination,
+        requesting_office,
+        passenger_names,
+        status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *;`,
+      [
+        req.user.userId,
+        departure_time,
+        arrival_time,
+        destination,
+        requesting_office,
+        passenger_names || [],
+        'Pending'
+      ]
+    );
+
+    const newReq = requestResult.rows[0];
+
+    // Create notification
+    await client.query(
+      `INSERT INTO tbl_notifications (request_id, type, message)
+       VALUES ($1, $2, $3)`,
+      [
+        newReq.request_id,
+        'new_request',
+        `New travel request to ${destination} from ${requesting_office}`
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    // Format response
+    const formatted = {
+      id: newReq.request_id,
+      user_id: newReq.user_id,
+      fromDate: newReq.departure_time.toISOString().split('T')[0],
+      fromTime: newReq.departure_time.toISOString().split('T')[1].slice(0, 5),
+      toDate: newReq.arrival_time.toISOString().split('T')[0],
+      toTime: newReq.arrival_time.toISOString().split('T')[1].slice(0, 5),
+      destination: newReq.destination,
+      names: Array.isArray(newReq.passenger_names) ? newReq.passenger_names : [],
+      requestingOffice: newReq.requesting_office,
+      status: newReq.status,
+    };
+
+    console.log(`✅ Created request ID: ${newReq.request_id}`);
+    
+    return res.status(201).json({
+      status: 'success',
+      message: 'Request created successfully',
+      data: formatted
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error("❌ Create request error:", error);
+    
+    return res.status(500).json({ 
+      status: 'error',
+      message: "Failed to create request",
+      code: 'CREATE_REQUEST_FAILED'
+    });
+  } finally {
+    client.release();
+  }
+});
+
+// ============================
+//      UPDATE REQUEST STATUS
+// ============================
+router.put('/:id/status', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const { id } = req.params;
+    const { status, driver_name, contact_no, vehicle_type, plate_no, reason_for_decline } = req.body;
+
+    console.log(`📥 Update Request Status:`, { id, ...req.body });
+
+    const validStatuses = ["Pending", "Accepted", "Declined"];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        status: 'error',
+        message: "Invalid status",
+        code: 'INVALID_STATUS'
+      });
+    }
+
+    await client.query('BEGIN');
+
+    // Update request
+    const result = await client.query(
+      `UPDATE tbl_requests
+       SET status = $1, 
+           driver_name = $2, 
+           contact_no = $3, 
+           vehicle_type = $4, 
+           plate_no = $5,
+           reason_for_decline = $6,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE request_id = $7
+       RETURNING *;`,
+      [status, driver_name, contact_no, vehicle_type, plate_no, reason_for_decline, id]
+    );
+
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ 
+        status: 'error',
+        message: "Request not found",
+        code: 'REQUEST_NOT_FOUND'
+      });
+    }
+
+    // Create status notification
+    await client.query(
+      `INSERT INTO tbl_notifications (request_id, type, message)
+       VALUES ($1, $2, $3)`,
+      [
+        id,
+        'status_update',
+        `Request to ${result.rows[0].destination} has been ${status.toLowerCase()}`
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    const updated = result.rows[0];
+    const formatted = {
+      id: updated.request_id,
+      user_id: updated.user_id,
+      fromDate: updated.departure_time ? updated.departure_time.toISOString().split('T')[0] : null,
+      fromTime: updated.departure_time ? updated.departure_time.toISOString().split('T')[1]?.slice(0, 5) : null,
+      toDate: updated.arrival_time ? updated.arrival_time.toISOString().split('T')[0] : null,
+      toTime: updated.arrival_time ? updated.arrival_time.toISOString().split('T')[1]?.slice(0, 5) : null,
+      destination: updated.destination,
+      status: updated.status,
+      names: Array.isArray(updated.passenger_names) ? updated.passenger_names : [],
+      requestingOffice: updated.requesting_office,
+      driver: updated.driver_name,
+      driverContact: updated.contact_no,
+      vehicleType: updated.vehicle_type,
+      plateNo: updated.plate_no,
+    };
+
+    console.log(`✅ Updated request ID: ${id} to status: ${status}`);
+    
+    return res.status(200).json({
+      status: 'success',
+      message: `Request ${status.toLowerCase()} successfully`,
+      data: formatted
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error("❌ Update request error:", error);
+    
+    return res.status(500).json({ 
+      status: 'error',
+      message: "Failed to update request",
+      code: 'UPDATE_REQUEST_FAILED'
+    });
+  } finally {
+    client.release();
+  }
+});
+
+// ============================
+//        DELETE REQUEST
+// ============================
+router.delete('/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    console.log(`📥 Deleting request ID: ${id}`);
+    
+    const result = await pool.query(
+      'DELETE FROM tbl_requests WHERE request_id = $1 RETURNING *',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        status: 'error',
+        message: "Request not found",
+        code: 'REQUEST_NOT_FOUND'
+      });
+    }
+
+    return res.status(200).json({
+      status: 'success',
+      message: "Request deleted successfully"
+    });
+
+  } catch (error) {
+    console.error("❌ Delete request error:", error);
+    
+    return res.status(500).json({ 
+      status: 'error',
+      message: "Failed to delete request",
+      code: 'DELETE_REQUEST_FAILED'
+    });
   }
 });
 
