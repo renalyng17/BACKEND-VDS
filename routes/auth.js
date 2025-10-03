@@ -1,18 +1,20 @@
-const express = require('express');
-const router = express.Router();
-const pool = require('../db');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { validationResult } = require('express-validator');
-const { registerValidation, loginValidation } = require('../validators/authValidators');
-const crypto = require('crypto');
-const nodemailer = require('nodemailer');
+// routes/auth.js - COMPLETE FIXED VERSION
+const express = require("express");
+const pool = require("../db");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const { validationResult } = require("express-validator");
+const { registerValidation, loginValidation } = require("../validators/authValidators");
+const crypto = require("crypto");
+const nodemailer = require("nodemailer");
 
-// Email transporter configuration
+const router = express.Router();
+
+// Email transporter configuration - FIXED: createTransport (not createTransporter)
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST,
   port: process.env.EMAIL_PORT,
-  secure: false, // true for 465, false for other ports
+  secure: false,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASSWORD
@@ -22,7 +24,6 @@ const transporter = nodemailer.createTransport({
 // ============================
 //     FORGOT PASSWORD ROUTE
 // ============================
-// routes/auth.js
 router.post('/reset-password', async (req, res) => {
   const { email, newPassword } = req.body;
 
@@ -59,10 +60,10 @@ router.post('/reset-password', async (req, res) => {
     });
   }
 });
+
 // ============================
 //        REGISTER ROUTE
 // ============================
-// Add to your existing auth routes
 router.post('/register', async (req, res) => {
   const { first_name, last_name, email, password, contact_no, user_type, office } = req.body;
 
@@ -105,7 +106,11 @@ router.post('/register', async (req, res) => {
 
     // Generate token
     const token = jwt.sign(
-      { userId: newUser.rows[0].user_id },
+      { 
+        userId: newUser.rows[0].user_id,
+        userType: newUser.rows[0].user_type,
+        email: newUser.rows[0].email
+      },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -115,7 +120,7 @@ router.post('/register', async (req, res) => {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      maxAge: 24 * 60 * 60 * 1000
     });
 
     return res.status(201).json({
@@ -129,6 +134,7 @@ router.post('/register', async (req, res) => {
     return res.status(500).json({ message: 'Registration failed', error: error.message });
   }
 });
+
 // ============================
 //         LOGIN ROUTE
 // ============================
@@ -181,7 +187,16 @@ router.post('/login', loginValidation, async (req, res) => {
       { expiresIn: '24h' }
     );
 
+    // Remove password from user object
     delete user.password;
+
+    // Set cookie
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 24 * 60 * 60 * 1000
+    });
 
     return res.status(200).json({
       status: 'success',
@@ -192,12 +207,51 @@ router.post('/login', loginValidation, async (req, res) => {
 
   } catch (err) {
     console.error(' Login error:', err);
-    return res.status(500).json( {
+    return res.status(500).json({
       status: 'error',
       message: 'Login failed',
       code: 'LOGIN_FAILED',
       details: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
+  }
+});
+
+// ============================
+//         LOGOUT ROUTE
+// ============================
+router.post('/logout', (req, res) => {
+  res.clearCookie('token');
+  res.json({ message: 'Logged out successfully' });
+});
+
+// ============================
+//         PROFILE ROUTE
+// ============================
+router.get('/profile', async (req, res) => {
+  try {
+    // Get token from cookie or header
+    const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    const userResult = await pool.query(
+      'SELECT user_id, first_name, last_name, email, contact_no, user_type, office FROM tbl_users WHERE user_id = $1',
+      [decoded.userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(userResult.rows[0]);
+  } catch (err) {
+    console.error('Profile error:', err);
+    res.status(401).json({ error: 'Invalid token' });
   }
 });
 
