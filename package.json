@@ -195,8 +195,8 @@
     "typescript": "^5.8.3"
   },
   "scripts": {
-  "dev": "nodemon server.js",
-  "start": "node server.js"
+    "dev": "nodemon server.js",
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
