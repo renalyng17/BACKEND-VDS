@@ -11,14 +11,14 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// Test connection
-pool.connect((err, client, release) => {
-  if (err) {
-    console.error('Database connection error:', err.stack);
-  } else {
-    console.log('Database connected successfully');
-    release();
-  }
-});
+pool.connect()
+  .then(client => {
+    console.log(' Successfully connected to PostgreSQL database');
+    client.release();
+  })
+  .catch(err => {
+    console.error(' DATABASE CONNECTION ERROR:', err);
+    process.exit(1);
+  });
 
 module.exports = pool;
