@@ -80,23 +80,22 @@
   });
 
   // Update notification as read
-  app.put('/api/notifications/:id', (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const notification = notifications.find(n => n.id === id);
-
-      if (notification) {
-        notification.read = true;
-        res.json(notification);
-      } else {
-        res.status(404).json({ error: "Notification not found" });
-      }
-    } catch (error) {
-      console.error("Update notification error:", error);
-      res.status(500).json({ error: "Failed to update notification" });
-    }
-  });
-
+ // Get pending requests as notifications
+app.get('/api/notifications', (req, res) => {
+  try {
+    const pending = requests.filter(req => req.status === "Pending");
+    const enriched = pending.map(req => ({
+      ...req,
+      message: `New travel request from ${req.name || 'Unknown'} (${req.department || 'N/A'}) to ${req.destination || 'Unknown'}.`,
+      timestamp: req.date ? new Date(req.date).toISOString() : new Date().toISOString(),
+      read: false
+    }));
+    res.json(enriched);
+  } catch (error) {
+    console.error("Error fetching notifications:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
   // Update request status (Accept/Decline)
   app.put('/api/requests/:id', (req, res) => {
     try {
