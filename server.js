@@ -25,22 +25,65 @@ let archivedDrivers = [];
 let drivers = [];
 let vehicles = [];
 
-// === Helper: Update request status (shared logic) ===
+// === Helper: Get available seats for a vehicle ===
+const getAvailableSeats = (plateNo) => {
+  const vehicle = vehicles.find(v => v.plateNo === plateNo && !v.archivedAt);
+  if (!vehicle) return null;
+
+  const occupied = requests
+    .filter(req => 
+      req.status === "Accepted" && 
+      req.plateNo === plateNo
+    )
+    .reduce((total, req) => {
+      const groupSize = Array.isArray(req.names) ? req.names.length : 1;
+      return total + groupSize;
+    }, 0);
+
+  return {
+    total: vehicle.capacity,
+    occupied,
+    available: vehicle.capacity - occupied
+  };
+};
+
+// === Helper: Update request status (with seat validation) ===
 const updateRequestStatus = (request, updateData) => {
   const {
     status,
-    // Support both frontend styles
     driver, driver_name,
     vehicleType, vehicle_type,
     plateNo, plate_no,
     reason, reason_for_decline
   } = updateData;
 
-  // Normalize status to "Accepted"/"Declined"
   let finalStatus = status;
   if (status === "Accept") finalStatus = "Accepted";
   if (status === "Decline") finalStatus = "Declined";
 
+  // 🔒 SEAT VALIDATION: Only when accepting
+  if (finalStatus === "Accepted") {
+    const selectedPlate = plate_no || plateNo;
+    if (!selectedPlate) {
+      throw new Error("Vehicle plate number is required to accept a request.");
+    }
+
+    const seatInfo = getAvailableSeats(selectedPlate);
+    if (!seatInfo) {
+      throw new Error(`Vehicle with plate ${selectedPlate} not found.`);
+    }
+
+    const groupSize = Array.isArray(request.names) ? request.names.length : 1;
+    if (groupSize > seatInfo.available) {
+      throw new Error(
+        `Not enough seats! Vehicle has ${seatInfo.available} seat(s) left, but group needs ${groupSize}.`
+      );
+    }
+
+    console.log(`✅ Seat check passed: ${groupSize} passengers fit in ${selectedPlate} (${seatInfo.available} → ${seatInfo.available - groupSize} left)`);
+  }
+
+  // Proceed with update
   request.status = finalStatus;
   request.processedDate = new Date().toISOString().split('T')[0];
 
@@ -59,7 +102,7 @@ const updateRequestStatus = (request, updateData) => {
     console.log(`❌ Request ${request.id} DECLINED | Reason: ${request.reason || 'No reason provided'}`);
   }
 
-  // Add status update notification
+  // Add notification
   const notification = {
     id: Date.now(),
     requestId: request.id,
@@ -145,7 +188,7 @@ app.get('/api/notifications/unread/count', (req, res) => {
   }
 });
 
-// Update request status — main endpoint
+// Update request status — main endpoint (with seat validation)
 app.put('/api/requests/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -159,7 +202,7 @@ app.put('/api/requests/:id', (req, res) => {
     res.json(updated);
   } catch (error) {
     console.error("Update request error:", error);
-    res.status(500).json({ error: "Failed to update request" });
+    res.status(400).json({ error: error.message || "Failed to update request" });
   }
 });
 
@@ -177,7 +220,7 @@ app.put('/api/requests/:id/status', (req, res) => {
     res.json(updated);
   } catch (error) {
     console.error("Update request status error:", error);
-    res.status(500).json({ error: "Failed to update request status" });
+    res.status(400).json({ error: error.message || "Failed to update request status" });
   }
 });
 
@@ -252,13 +295,13 @@ app.post('/api/vehicles', (req, res) => {
       id: Date.now(),
       vehicleType: vehicleType.trim(),
       plateNo: normalizedPlateNo,
-      capacity: parsedCapacity,
+      capacity: parsedCapacity, // 👈 This is your total seats
       fuelType: fuelType.trim(),
       fleetCard: (fleetCard || "").trim(),
       rfid: (rfid || "").trim(),
     };
     vehicles.push(newVehicle);
-    console.log("✅ Vehicle created:", newVehicle); // Already present
+    console.log("✅ Vehicle created:", newVehicle);
     res.status(201).json(newVehicle);
   } catch (error) {
     console.error("Create vehicle error:", error);
@@ -281,7 +324,7 @@ app.post('/api/drivers', (req, res) => {
       status: "Active"
     };
     drivers.push(newDriver);
-    console.log("✅ Driver created:", newDriver); // Already present
+    console.log("✅ Driver created:", newDriver);
     res.status(201).json(newDriver);
   } catch (error) {
     console.error("Create driver error:", error);
@@ -334,6 +377,26 @@ app.patch('/api/drivers/:id/restore', (req, res) => {
   archivedDrivers.splice(idx, 1);
   console.log("↩️ Driver restored:", driver);
   res.json(driver);
+});
+
+// Optional: Add endpoint to check vehicle availability (for admin UI)
+app.get('/api/vehicles/:plateNo/availability', (req, res) => {
+  try {
+    const { plateNo } = req.params;
+    const normalized = plateNo.trim().toUpperCase();
+    const info = getAvailableSeats(normalized);
+    if (!info) {
+      return res.status(404).json({ error: "Vehicle not found" });
+    }
+    res.json({
+      plateNo: normalized,
+      totalSeats: info.total,
+      occupiedSeats: info.occupied,
+      availableSeats: info.available
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch availability" });
+  }
 });
 
 // Auth (optional)
