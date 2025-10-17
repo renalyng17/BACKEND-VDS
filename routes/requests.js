@@ -1,5 +1,5 @@
 // ============================
-//      UPDATE REQUEST STATUS (WITH SEAT VALIDATION USING VIEW)
+//      UPDATE REQUEST STATUS (WITH DRIVER + SEAT VALIDATION)
 // ============================
 router.put('/:id/status', authenticateToken, async (req, res) => {
   const client = await pool.connect();
@@ -19,9 +19,14 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
-    // Fetch current request to get passenger count
+    // Fetch current request to get passenger count and date
     const currentReq = await client.query(
-      `SELECT passenger_names, status AS current_status FROM tbl_requests WHERE request_id = $1`,
+      `SELECT 
+         passenger_names, 
+         status AS current_status,
+         departure_time
+       FROM tbl_requests 
+       WHERE request_id = $1`,
       [id]
     );
 
@@ -33,13 +38,23 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
-    const { passenger_names, current_status } = currentReq.rows[0];
+    const { passenger_names, current_status, departure_time } = currentReq.rows[0];
     const groupSize = Array.isArray(passenger_names) 
       ? passenger_names.length 
       : (passenger_names ? passenger_names.toString().split(',').length : 1);
 
-    // 🔑 SEAT VALIDATION: Only when accepting
+    const fromDate = departure_time ? new Date(departure_time).toISOString().split('T')[0] : null;
+
+    // 🔑 DRIVER VALIDATION: Only when accepting
     if (status === "Accepted") {
+      if (!driver_name) {
+        return res.status(400).json({
+          status: 'error',
+          message: "Driver name is required when accepting",
+          code: 'MISSING_DRIVER'
+        });
+      }
+
       if (!plate_no) {
         return res.status(400).json({
           status: 'error',
@@ -48,7 +63,34 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
         });
       }
 
-      // ✅ USE YOUR car_availability VIEW HERE
+      // ✅ CHECK IF DRIVER IS ALREADY BOOKED ON THIS DATE
+      const driverConflict = await client.query(
+        `SELECT request_id, plate_no, status
+         FROM tbl_requests
+         WHERE driver_name = $1
+           AND DATE(departure_time) = $2
+           AND status IN ('Pending', 'Accepted')
+           AND request_id != $3`,
+        [driver_name.trim(), fromDate, id]
+      );
+
+      if (driverConflict.rows.length > 0) {
+        const conflict = driverConflict.rows[0];
+        return res.status(400).json({
+          status: 'error',
+          message: `Driver "${driver_name}" is already assigned to another trip on ${fromDate} (Vehicle: ${conflict.plate_no}, Status: ${conflict.status})`,
+          code: 'DRIVER_ALREADY_BOOKED',
+          details: {
+            driver: driver_name,
+            date: fromDate,
+            conflictingRequestId: conflict.request_id,
+            conflictingPlate: conflict.plate_no,
+            conflictingStatus: conflict.status
+          }
+        });
+      }
+
+      // ✅ VEHICLE SEAT VALIDATION (using your car_availability view)
       const availResult = await client.query(
         `SELECT car_id, total_seats, occupied_seats, available_seats 
          FROM car_availability 
@@ -87,7 +129,7 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
       );
     }
 
-    // 🔁 Now proceed with status update (inside transaction)
+    // 🔁 Proceed with status update (inside transaction)
     await client.query('BEGIN');
 
     const result = await client.query(
@@ -164,4 +206,4 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
   } finally {
     client.release();
   }
-});
+}); 
