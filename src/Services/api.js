@@ -1,5 +1,5 @@
 // src/services/api.js
-const API_BASE_URL = 'http://localhost:3001/api'; // Adjust to your backend URL
+const API_BASE_URL = 'http://localhost:3001/api';
 
 // === Vehicles ===
 export const getVehicles = async () => {
@@ -23,8 +23,8 @@ export const createVehicle = async (vehicleData) => {
       plateNo: vehicleData.plateNo,
       capacity: Number(vehicleData.capacity),
       fuelType: vehicleData.fuelType,
-      fleetCard: vehicleData.fleetCard,      // "Available" or "Unavailable"
-      rfid: vehicleData.rfid,                // "Available" or "Unavailable"
+      fleetCard: vehicleData.fleetCard,
+      rfid: vehicleData.rfid,
     }),
   });
   if (!response.ok) {
@@ -69,7 +69,7 @@ export const createDriver = async (driverData) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name: driverData.name,
-      contact: driverData.contact,    // Should be in E.164 format (e.g., +639123456789)
+      contact: driverData.contact,
       email: driverData.email,
     }),
   });
@@ -103,13 +103,13 @@ export const getRequests = async () => {
   return await response.json();
 };
 
-export const updateRequestStatus = async (id, data) => {
+// ✅ FIXED: Use PUT to match your backend route
+export const updateRequestStatus = async (id, updateData) => {
   const response = await fetch(`${API_BASE_URL}/requests/${id}`, {
-    method: 'PATCH',
+    method: 'PUT', // 🔥 Changed from PATCH to PUT
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    body: JSON.stringify(updateData),
   });
-
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(error.message || 'Failed to update request');
@@ -117,7 +117,7 @@ export const updateRequestStatus = async (id, data) => {
   return await response.json();
 };
 
-// === Unified API object (optional, for compatibility) ===
+// === Unified API object ===
 export const api = {
   getVehicles,
   getArchivedVehicles,
