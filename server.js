@@ -47,7 +47,8 @@ const getAvailableSeats = (plateNo) => {
   };
 };
 
-// === Helper: Update request status (with seat validation) ===
+// === Helper: Update request status (with SEAT + DRIVER validation) ===
+// 🔄 Returns { success: true, data } OR { success: false, message, code }
 const updateRequestStatus = (request, updateData) => {
   const {
     status,
@@ -61,36 +62,60 @@ const updateRequestStatus = (request, updateData) => {
   if (status === "Accept") finalStatus = "Accepted";
   if (status === "Decline") finalStatus = "Declined";
 
-  // 🔒 SEAT VALIDATION: Only when accepting
+  // 🔒 VALIDATION: Only when accepting
   if (finalStatus === "Accepted") {
-    const selectedPlate = plate_no || plateNo;
+    const selectedDriver = (driver_name || driver)?.trim();
+    const selectedPlate = (plate_no || plateNo)?.trim();
+
+    if (!selectedDriver) {
+      return { success: false, message: "Driver name is required to accept a request.", code: 400 };
+    }
     if (!selectedPlate) {
-      throw new Error("Vehicle plate number is required to accept a request.");
+      return { success: false, message: "Vehicle plate number is required to accept a request.", code: 400 };
     }
 
+    // ✅ DRIVER CONFLICT CHECK
+    const existingAssignment = requests.find(req =>
+      req.id !== request.id &&
+      (req.status === "Accepted" || req.status === "Pending") &&
+      req.driver?.trim() === selectedDriver &&
+      req.fromDate === request.fromDate
+    );
+
+    if (existingAssignment) {
+      return {
+        success: false,
+        code: 409,
+        message: `Driver "${selectedDriver}" is already assigned to another trip on ${request.fromDate} (Vehicle: ${existingAssignment.plateNo})`
+      };
+    }
+
+    // ✅ VEHICLE SEAT VALIDATION
     const seatInfo = getAvailableSeats(selectedPlate);
     if (!seatInfo) {
-      throw new Error(`Vehicle with plate ${selectedPlate} not found.`);
+      return { success: false, message: `Vehicle with plate ${selectedPlate} not found.`, code: 404 };
     }
 
     const groupSize = Array.isArray(request.names) ? request.names.length : 1;
     if (groupSize > seatInfo.available) {
-      throw new Error(
-        `Not enough seats! Vehicle has ${seatInfo.available} seat(s) left, but group needs ${groupSize}.`
-      );
+      return {
+        success: false,
+        code: 400,
+        message: `Not enough seats! Vehicle has ${seatInfo.available} seat(s) left, but group needs ${groupSize}.`
+      };
     }
 
     console.log(`✅ Seat check passed: ${groupSize} passengers fit in ${selectedPlate} (${seatInfo.available} → ${seatInfo.available - groupSize} left)`);
   }
 
-  // Proceed with update
+  // ✅ Proceed with update
   request.status = finalStatus;
   request.processedDate = new Date().toISOString().split('T')[0];
 
   if (finalStatus === "Accepted") {
-    request.driver = driver_name || driver;
+    request.driver = (driver_name || driver)?.trim();
     request.vehicleType = vehicle_type || vehicleType;
-    request.plateNo = plate_no || plateNo;
+    request.plateNo = (plate_no || plateNo)?.trim();
   } else if (finalStatus === "Declined") {
     request.reason = reason_for_decline || reason;
   }
@@ -113,7 +138,7 @@ const updateRequestStatus = (request, updateData) => {
   };
   notifications.push(notification);
 
-  return request;
+  return { success: true, data: request };
 };
 
 // === Routes ===
@@ -137,6 +162,10 @@ app.post('/api/requests', (req, res) => {
       status: "Pending",
       date: new Date().toISOString().split('T')[0]
     };
+
+    if (!newRequest.fromDate) {
+      return res.status(400).json({ error: "fromDate is required" });
+    }
 
     requests.push(newRequest);
 
@@ -188,39 +217,40 @@ app.get('/api/notifications/unread/count', (req, res) => {
   }
 });
 
-// Update request status — main endpoint (with seat validation)
+// Update request status — main endpoint
 app.put('/api/requests/:id', (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const request = requests.find(r => r.id === id);
+  const id = parseInt(req.params.id, 10);
+  const request = requests.find(r => r.id === id);
 
-    if (!request) {
-      return res.status(404).json({ error: "Request not found" });
-    }
+  if (!request) {
+    return res.status(404).json({ error: "Request not found" });
+  }
 
-    const updated = updateRequestStatus(request, req.body);
-    res.json(updated);
-  } catch (error) {
-    console.error("Update request error:", error);
-    res.status(400).json({ error: error.message || "Failed to update request" });
+  const result = updateRequestStatus(request, req.body);
+
+  if (result.success) {
+    res.json(result.data);
+  } else {
+    // Send user-friendly error for frontend snackbar
+    res.status(result.code || 400).json({ error: result.message });
   }
 });
 
 // Update request status via /status (for compatibility)
 app.put('/api/requests/:id/status', (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const request = requests.find(r => r.id === id);
+  const id = parseInt(req.params.id, 10);
+  const request = requests.find(r => r.id === id);
 
-    if (!request) {
-      return res.status(404).json({ error: "Request not found" });
-    }
+  if (!request) {
+    return res.status(404).json({ error: "Request not found" });
+  }
 
-    const updated = updateRequestStatus(request, req.body);
-    res.json(updated);
-  } catch (error) {
-    console.error("Update request status error:", error);
-    res.status(400).json({ error: error.message || "Failed to update request status" });
+  const result = updateRequestStatus(request, req.body);
+
+  if (result.success) {
+    res.json(result.data);
+  } else {
+    res.status(result.code || 400).json({ error: result.message });
   }
 });
 
@@ -295,7 +325,7 @@ app.post('/api/vehicles', (req, res) => {
       id: Date.now(),
       vehicleType: vehicleType.trim(),
       plateNo: normalizedPlateNo,
-      capacity: parsedCapacity, // 👈 This is your total seats
+      capacity: parsedCapacity,
       fuelType: fuelType.trim(),
       fleetCard: (fleetCard || "").trim(),
       rfid: (rfid || "").trim(),
@@ -417,4 +447,4 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(` Server running on port ${PORT}`));
