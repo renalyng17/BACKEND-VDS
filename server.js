@@ -317,8 +317,15 @@ app.put('/api/requests/:id/status', (req, res) => {
       requests[requestIndex].driverContact = contact_no;
       requests[requestIndex].vehicleType = vehicle_type;
       requests[requestIndex].plateNo = plate_no;
+      // Clear decline reason if any
+      delete requests[requestIndex].reason;
     } else if (status === "Declined") {
       requests[requestIndex].reason = reason_for_decline;
+      // Clear driver/vehicle info if any
+      delete requests[requestIndex].driver;
+      delete requests[requestIndex].driverContact;
+      delete requests[requestIndex].vehicleType;
+      delete requests[requestIndex].plateNo;
     }
 
     // Create status notification
@@ -330,6 +337,15 @@ app.put('/api/requests/:id/status', (req, res) => {
       read: false,
       createdAt: new Date().toISOString()
     };
+
+    // Add driver and vehicle info to notification for accepted requests
+    if (status === "Accepted") {
+      notification.driver = driver_name;
+      notification.vehicleType = vehicle_type;
+      notification.plateNo = plate_no;
+    } else if (status === "Declined") {
+      notification.reason = reason_for_decline;
+    }
 
     notifications.push(notification);
 
@@ -396,6 +412,20 @@ app.get('/api/notifications/unread/count', (req, res) => {
   } catch (error) {
     console.error("Get unread count error:", error);
     res.status(500).json({ error: "Failed to get unread count" });
+  }
+});
+
+// Mark all notifications as read
+app.put('/api/notifications/mark-all-read', (req, res) => {
+  try {
+    notifications.forEach(notification => {
+      notification.read = true;
+    });
+    
+    res.json({ message: "All notifications marked as read" });
+  } catch (error) {
+    console.error("Mark all as read error:", error);
+    res.status(500).json({ error: "Failed to mark all notifications as read" });
   }
 });
 
