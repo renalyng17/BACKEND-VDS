@@ -18,77 +18,187 @@
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
 
-  // In-memory storage (replace with database in production)
-  let requests = [];
-  let notifications = [];
+// In-memory storage (replace with database in production)
+let requests = [];
+let notifications = [];
+let archivedVehicles = [];
+let archivedDrivers = [];
+let drivers = [];
+let vehicles = [];
 
-  // Add archived arrays
-  let archivedVehicles = [];
-  let archivedDrivers = [];
+// === Helper: Get available seats for a vehicle ===
+const getAvailableSeats = (plateNo) => {
+  const vehicle = vehicles.find(v => v.plateNo === plateNo && !v.archivedAt);
+  if (!vehicle) return null;
 
-  // Initialize main arrays
-  let drivers = [];
-  let vehicles = [];
+  const occupied = requests
+    .filter(req => 
+      req.status === "Accepted" && 
+      req.plateNo === plateNo
+    )
+    .reduce((total, req) => {
+      const groupSize = Array.isArray(req.names) ? req.names.length : 1;
+      return total + groupSize;
+    }, 0);
 
+  return {
+    total: vehicle.capacity,
+    occupied,
+    available: vehicle.capacity - occupied
+  };
+};
 
-  // Routes
+// === Helper: Update request status (with SEAT + DRIVER validation) ===
+// 🔄 Returns { success: true, data } OR { success: false, message, code }
+const updateRequestStatus = (request, updateData) => {
+  const {
+    status,
+    driver, driver_name,
+    vehicleType, vehicle_type,
+    plateNo, plate_no,
+    reason, reason_for_decline
+  } = updateData;
+
+  let finalStatus = status;
+  if (status === "Accept") finalStatus = "Accepted";
+  if (status === "Decline") finalStatus = "Declined";
+
+  // 🔒 VALIDATION: Only when accepting
+  if (finalStatus === "Accepted") {
+    const selectedDriver = (driver_name || driver)?.trim();
+    const selectedPlate = (plate_no || plateNo)?.trim();
+
+    if (!selectedDriver) {
+      return { success: false, message: "Driver name is required to accept a request.", code: 400 };
+    }
+    if (!selectedPlate) {
+      return { success: false, message: "Vehicle plate number is required to accept a request.", code: 400 };
+    }
+
+    // ✅ DRIVER CONFLICT CHECK
+    const existingAssignment = requests.find(req =>
+      req.id !== request.id &&
+      (req.status === "Accepted" || req.status === "Pending") &&
+      req.driver?.trim() === selectedDriver &&
+      req.fromDate === request.fromDate
+    );
+
+    if (existingAssignment) {
+      return {
+        success: false,
+        code: 409,
+        message: `Driver "${selectedDriver}" is already assigned to another trip on ${request.fromDate} (Vehicle: ${existingAssignment.plateNo})`
+      };
+    }
+
+    // ✅ VEHICLE SEAT VALIDATION
+    const seatInfo = getAvailableSeats(selectedPlate);
+    if (!seatInfo) {
+      return { success: false, message: `Vehicle with plate ${selectedPlate} not found.`, code: 404 };
+    }
+
+    const groupSize = Array.isArray(request.names) ? request.names.length : 1;
+    if (groupSize > seatInfo.available) {
+      return {
+        success: false,
+        code: 400,
+        message: `Not enough seats! Vehicle has ${seatInfo.available} seat(s) left, but group needs ${groupSize}.`
+      };
+    }
+
+    console.log(`✅ Seat check passed: ${groupSize} passengers fit in ${selectedPlate} (${seatInfo.available} → ${seatInfo.available - groupSize} left)`);
+  }
+
+  // ✅ Proceed with update
+  request.status = finalStatus;
+  request.processedDate = new Date().toISOString().split('T')[0];
+
+  if (finalStatus === "Accepted") {
+    request.driver = (driver_name || driver)?.trim();
+    request.vehicleType = vehicle_type || vehicleType;
+    request.plateNo = (plate_no || plateNo)?.trim();
+  } else if (finalStatus === "Declined") {
+    request.reason = reason_for_decline || reason;
+  }
+
+  // ✅ LOG TO TERMINAL
+  if (finalStatus === "Accepted") {
+    console.log(`✅ Request ${request.id} ACCEPTED | Driver: ${request.driver} | Vehicle: ${request.vehicleType} (${request.plateNo})`);
+  } else if (finalStatus === "Declined") {
+    console.log(`❌ Request ${request.id} DECLINED | Reason: ${request.reason || 'No reason provided'}`);
+  }
+
+  // Add notification
+  const notification = {
+    id: Date.now(),
+    requestId: request.id,
+    type: "status_update",
+    message: `Request to ${request.destination} has been ${finalStatus}`,
+    timestamp: new Date().toISOString(),
+    read: false
+  };
+  notifications.push(notification);
+
+  return { success: true, data: request };
+};
+
+// === Routes ===
 
   // Health check
   app.get('/api/health', (req, res) => {
     res.json({ status: 'OK' });
   });
 
-  // Get all requests
-  app.get('/api/requests', (req, res) => {
-    res.json(requests);
-  });
+// Get all requests
+app.get('/api/requests', (req, res) => {
+  res.json(requests);
+});
 
-  // Create a new request
-  app.post('/api/requests', (req, res) => {
-    try {
-      const newRequest = {
-        id: Date.now(),
-        ...req.body,
-        status: "Pending",
-        date: new Date().toISOString().split('T')[0]
-      };
+// Create a new request
+app.post('/api/requests', (req, res) => {
+  try {
+    const newRequest = {
+      id: Date.now(),
+      ...req.body,
+      status: "Pending",
+      date: new Date().toISOString().split('T')[0]
+    };
 
-      requests.push(newRequest);
-
-      // Create a notification for the new request
-      const notification = {
-        id: Date.now(),
-        requestId: newRequest.id,
-        type: "new_request",
-        message: `New travel request to ${newRequest.destination}`,
-        timestamp: new Date().toISOString(),
-        read: false
-      };
-
-      notifications.push(notification);
-
-      res.status(201).json(newRequest);
-    } catch (error) {
-      console.error("Create request error:", error);
-      res.status(500).json({ error: "Failed to create request" });
+    if (!newRequest.fromDate) {
+      return res.status(400).json({ error: "fromDate is required" });
     }
-  });
 
-  // Get all notifications
-  app.get('/api/notifications', (req, res) => {
-    res.json(notifications);
-  });
+    requests.push(newRequest);
 
-  // Update notification as read
- // Get pending requests as notifications
+    const notification = {
+      id: Date.now(),
+      requestId: newRequest.id,
+      type: "new_request",
+      message: `New travel request from ${newRequest.names?.join(', ') || 'Unknown'} (${newRequest.requestingOffice || 'N/A'}) to ${newRequest.destination || 'Unknown'}.`,
+      timestamp: new Date().toISOString(),
+      read: false
+    };
+    notifications.push(notification);
+
+    res.status(201).json(newRequest);
+  } catch (error) {
+    console.error("Create request error:", error);
+    res.status(500).json({ error: "Failed to create request" });
+  }
+});
+
+// Get notifications = pending requests
 app.get('/api/notifications', (req, res) => {
   try {
     const pending = requests.filter(req => req.status === "Pending");
     const enriched = pending.map(req => ({
-      ...req,
-      message: `New travel request from ${req.name || 'Unknown'} (${req.department || 'N/A'}) to ${req.destination || 'Unknown'}.`,
+      id: req.id,
+      requestId: req.id,
+      type: "new_request",
+      message: `New travel request from ${req.names?.join(', ') || 'Unknown'} (${req.requestingOffice || 'N/A'}) to ${req.destination || 'Unknown'}.`,
       timestamp: req.date ? new Date(req.date).toISOString() : new Date().toISOString(),
-      read: false
+      read: false,
+      ...req
     }));
     res.json(enriched);
   } catch (error) {
@@ -96,304 +206,246 @@ app.get('/api/notifications', (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-  // Update request status (Accept/Decline)
-  app.put('/api/requests/:id', (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const request = requests.find(r => r.id === id);
 
-      if (request) {
-        const { status, driver, vehicleType, plateNo, reason } = req.body;
-
-        request.status = status;
-        request.processedDate = new Date().toISOString().split('T')[0];
-
-        if (status === "Accepted") {
-          request.driver = driver;
-          request.vehicleType = vehicleType;
-          request.plateNo = plateNo;
-        } else if (status === "Declined") {
-          request.reason = reason;
-        }
-
-        // Create a notification for the status update
-        const notification = {
-          id: Date.now(),
-          requestId: request.id,
-          type: "status_update",
-          message: `Request to ${request.destination} has been ${status}`,
-          timestamp: new Date().toISOString(),
-          read: false
-        };
-
-        notifications.push(notification);
-
-        res.json(request);
-      } else {
-        res.status(404).json({ error: "Request not found" });
-      }
-    } catch (error) {
-      console.error("Update request error:", error);
-      res.status(500).json({ error: "Failed to update request" });
-    }
-  });
-
-  // Get available drivers
-  app.get('/api/drivers', (req, res) => {
-    res.json(drivers.filter(d => !d.archivedAt));
-  });
-
-  // Get available vehicles
-  app.get('/api/vehicles', (req, res) => {
-    res.json(vehicles.filter(v => !v.archivedAt));
-  });
-
-  // Get a specific request by ID
-  app.get('/api/requests/:id', (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const request = requests.find(r => r.id === id);
-
-      if (request) {
-        res.json(request);
-      } else {
-        res.status(404).json({ error: "Request not found" });
-      }
-    } catch (error) {
-      console.error("Get request error:", error);
-      res.status(500).json({ error: "Failed to fetch request" });
-    }
-  });
-
-  // Delete a request
-  app.delete('/api/requests/:id', (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const index = requests.findIndex(r => r.id === id);
-
-      if (index !== -1) {
-        requests.splice(index, 1);
-        res.json({ message: "Request deleted successfully" });
-      } else {
-        res.status(404).json({ error: "Request not found" });
-      }
-    } catch (error) {
-      console.error("Delete request error:", error);
-      res.status(500).json({ error: "Failed to delete request" });
-    }
-  });
-
-  // Get unread notifications count
-  app.get('/api/notifications/unread/count', (req, res) => {
-    try {
-      const count = notifications.filter(n => !n.read).length;
-      res.json({ count });
-    } catch (error) {
-      console.error("Get unread count error:", error);
-      res.status(500).json({ error: "Failed to get unread notifications count" });
-    }
-  });
-
-  // ✅ FIXED: Create Vehicle — with validation and duplicate check
-  app.post('/api/vehicles', (req, res) => {
-    try {
-      const { vehicleType, plateNo, capacity, fuelType, fleetCard, rfid } = req.body;
-
-      // Validate required fields
-      if (!vehicleType || !plateNo || !capacity || !fuelType) {
-        return res.status(400).json({
-          error: "Missing required fields: vehicleType, plateNo, capacity, fuelType"
-        });
-      }
-
-      // Normalize plate number for comparison
-      const normalizedPlateNo = plateNo.trim().toUpperCase();
-
-      // Check for duplicate among non-archived vehicles
-      const existing = vehicles.find(
-        v => v.plateNo && v.plateNo.trim().toUpperCase() === normalizedPlateNo && !v.archivedAt
-      );
-
-      if (existing) {
-        return res.status(409).json({ error: "Vehicle with this plate number already exists." });
-      }
-
-      // Parse capacity safely
-      const parsedCapacity = parseInt(capacity, 10);
-      if (isNaN(parsedCapacity)) {
-        return res.status(400).json({ error: "Invalid capacity value" });
-      }
-
-      const newVehicle = {
-        id: Date.now(),
-        vehicleType: vehicleType.trim(),
-        plateNo: normalizedPlateNo,
-        capacity: parsedCapacity,
-        fuelType: fuelType.trim(),
-        fleetCard: (fleetCard || "").trim(), // default to empty string
-        rfid: (rfid || "").trim(),           // default to empty string
-      };
-
-      vehicles.push(newVehicle);
-      console.log("✅ Vehicle created:", newVehicle);
-      res.status(201).json(newVehicle);
-
-    } catch (error) {
-      console.error("🚨 Create vehicle error:", error);
-      res.status(500).json({ error: "Failed to create vehicle" });
-    }
-  });
-
-  // ✅ FIXED: Create Driver — with validation
-  app.post('/api/drivers', (req, res) => {
-    try {
-      const { name, contact, email } = req.body;
-
-      if (!name || !contact || !email) {
-        return res.status(400).json({ error: "Missing required fields: name, contact, email" });
-      }
-
-      const newDriver = {
-        id: Date.now(),
-        name: name.trim(),
-        contact: contact.trim(),
-        email: email.trim(),
-        status: "Active"
-      };
-
-      drivers.push(newDriver);
-      console.log("✅ Driver created:", newDriver);
-      res.status(201).json(newDriver);
-    } catch (error) {
-      console.error("🚨 Create driver error:", error);
-      res.status(500).json({ error: "Failed to create driver" });
-    }
-  });
-
-  // ✅ FIXED: Archive Vehicle
-  app.patch('/api/vehicles/:id/archive', (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const vehicleIndex = vehicles.findIndex(v => v.id === id);
-
-      if (vehicleIndex === -1) {
-        return res.status(404).json({ error: "Vehicle not found" });
-      }
-
-      const vehicle = { ...vehicles[vehicleIndex] };
-      vehicle.archivedAt = new Date().toISOString();
-
-      archivedVehicles.push(vehicle);
-      vehicles.splice(vehicleIndex, 1);
-
-      console.log("📦 Vehicle archived:", vehicle);
-      res.json(vehicle);
-    } catch (error) {
-      console.error("🚨 Archive vehicle error:", error);
-      res.status(500).json({ error: "Failed to archive vehicle" });
-    }
-  });
-
-  // ✅ FIXED: Archive Driver
-  app.patch('/api/drivers/:id/archive', (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const driverIndex = drivers.findIndex(d => d.id === id);
-
-      if (driverIndex === -1) {
-        return res.status(404).json({ error: "Driver not found" });
-      }
-
-      const driver = { ...drivers[driverIndex] };
-      driver.archivedAt = new Date().toISOString();
-
-      archivedDrivers.push(driver);
-      drivers.splice(driverIndex, 1);
-
-      console.log("📦 Driver archived:", driver);
-      res.json(driver);
-    } catch (error) {
-      console.error("🚨 Archive driver error:", error);
-      res.status(500).json({ error: "Failed to archive driver" });
-    }
-  });
-
-  // ✅ FIXED: Restore Vehicle
-  app.patch('/api/vehicles/:id/restore', (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const vehicleIndex = archivedVehicles.findIndex(v => v.id === id);
-
-      if (vehicleIndex === -1) {
-        return res.status(404).json({ error: "Archived vehicle not found" });
-      }
-
-      const vehicle = { ...archivedVehicles[vehicleIndex] };
-      delete vehicle.archivedAt;
-
-      vehicles.push(vehicle);
-      archivedVehicles.splice(vehicleIndex, 1);
-
-      console.log("↩️ Vehicle restored:", vehicle);
-      res.json(vehicle);
-    } catch (error) {
-      console.error("🚨 Restore vehicle error:", error);
-      res.status(500).json({ error: "Failed to restore vehicle" });
-    }
-  });
-
-  // ✅ FIXED: Restore Driver
-  app.patch('/api/drivers/:id/restore', (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const driverIndex = archivedDrivers.findIndex(d => d.id === id);
-
-      if (driverIndex === -1) {
-        return res.status(404).json({ error: "Archived driver not found" });
-      }
-
-      const driver = { ...archivedDrivers[driverIndex] };
-      delete driver.archivedAt;
-
-      drivers.push(driver);
-      archivedDrivers.splice(driverIndex, 1);
-
-      console.log("↩️ Driver restored:", driver);
-      res.json(driver);
-    } catch (error) {
-      console.error("🚨 Restore driver error:", error);
-      res.status(500).json({ error: "Failed to restore driver" });
-    }
-  });
-
-  // ✅ Get Archived Vehicles
-  app.get('/api/vehicles/archived', (req, res) => {
-    res.json(archivedVehicles);
-  });
-
-  // ✅ Get Archived Drivers
-  app.get('/api/drivers/archived', (req, res) => {
-    res.json(archivedDrivers);
-  });
-
-  // Mount the auth router (if exists)
+// Get unread count
+app.get('/api/notifications/unread/count', (req, res) => {
   try {
-    const authRouter = require('./routes/auth');
-    console.log("Mounting /api/auth");
-    app.use('/api/auth', authRouter);
-  } catch (err) {
-    console.warn('Auth router not found or failed to load:', err.message);
+    const count = notifications.filter(n => !n.read).length;
+    res.json({ count });
+  } catch (error) {
+    console.error("Get unread count error:", error);
+    res.status(500).json({ error: "Failed to get unread notifications count" });
+  }
+});
+
+// Update request status — main endpoint
+app.put('/api/requests/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const request = requests.find(r => r.id === id);
+
+  if (!request) {
+    return res.status(404).json({ error: "Request not found" });
   }
 
-  // Error handling middleware
-  app.use((err, req, res, next) => {
-    console.error("Unhandled error:", err.stack);
-    res.status(500).json({ error: 'Something went wrong on the server!' });
-  });
+  const result = updateRequestStatus(request, req.body);
 
-  // 404 handler
-  app.use((req, res) => {
-    res.status(404).json({ error: 'Endpoint not found' });
-  });
+  if (result.success) {
+    res.json(result.data);
+  } else {
+    // Send user-friendly error for frontend snackbar
+    res.status(result.code || 400).json({ error: result.message });
+  }
+});
 
-  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// Update request status via /status (for compatibility)
+app.put('/api/requests/:id/status', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const request = requests.find(r => r.id === id);
+
+  if (!request) {
+    return res.status(404).json({ error: "Request not found" });
+  }
+
+  const result = updateRequestStatus(request, req.body);
+
+  if (result.success) {
+    res.json(result.data);
+  } else {
+    res.status(result.code || 400).json({ error: result.message });
+  }
+});
+
+// Get a specific request
+app.get('/api/requests/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const request = requests.find(r => r.id === id);
+    if (request) {
+      res.json(request);
+    } else {
+      res.status(404).json({ error: "Request not found" });
+    }
+  } catch (error) {
+    console.error("Get request error:", error);
+    res.status(500).json({ error: "Failed to fetch request" });
+  }
+});
+
+// Delete a request
+app.delete('/api/requests/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const index = requests.findIndex(r => r.id === id);
+    if (index !== -1) {
+      requests.splice(index, 1);
+      res.json({ message: "Request deleted successfully" });
+    } else {
+      res.status(404).json({ error: "Request not found" });
+    }
+  } catch (error) {
+    console.error("Delete request error:", error);
+    res.status(500).json({ error: "Failed to delete request" });
+  }
+});
+
+// Get available drivers
+app.get('/api/drivers', (req, res) => {
+  res.json(drivers.filter(d => !d.archivedAt));
+});
+
+// Get available vehicles
+app.get('/api/vehicles', (req, res) => {
+  res.json(vehicles.filter(v => !v.archivedAt));
+});
+
+// Get archived
+app.get('/api/vehicles/archived', (req, res) => {
+  res.json(archivedVehicles);
+});
+app.get('/api/drivers/archived', (req, res) => {
+  res.json(archivedDrivers);
+});
+
+// Create Vehicle
+app.post('/api/vehicles', (req, res) => {
+  try {
+    const { vehicleType, plateNo, capacity, fuelType, fleetCard, rfid } = req.body;
+    if (!vehicleType || !plateNo || !capacity || !fuelType) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    const normalizedPlateNo = plateNo.trim().toUpperCase();
+    const existing = vehicles.find(v => v.plateNo?.trim().toUpperCase() === normalizedPlateNo && !v.archivedAt);
+    if (existing) {
+      return res.status(409).json({ error: "Vehicle with this plate number already exists." });
+    }
+    const parsedCapacity = parseInt(capacity, 10);
+    if (isNaN(parsedCapacity)) {
+      return res.status(400).json({ error: "Invalid capacity" });
+    }
+    const newVehicle = {
+      id: Date.now(),
+      vehicleType: vehicleType.trim(),
+      plateNo: normalizedPlateNo,
+      capacity: parsedCapacity,
+      fuelType: fuelType.trim(),
+      fleetCard: (fleetCard || "").trim(),
+      rfid: (rfid || "").trim(),
+    };
+    vehicles.push(newVehicle);
+    console.log("✅ Vehicle created:", newVehicle);
+    res.status(201).json(newVehicle);
+  } catch (error) {
+    console.error("Create vehicle error:", error);
+    res.status(500).json({ error: "Failed to create vehicle" });
+  }
+});
+
+// Create Driver
+app.post('/api/drivers', (req, res) => {
+  try {
+    const { name, contact, email } = req.body;
+    if (!name || !contact || !email) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    const newDriver = {
+      id: Date.now(),
+      name: name.trim(),
+      contact: contact.trim(),
+      email: email.trim(),
+      status: "Active"
+    };
+    drivers.push(newDriver);
+    console.log("✅ Driver created:", newDriver);
+    res.status(201).json(newDriver);
+  } catch (error) {
+    console.error("Create driver error:", error);
+    res.status(500).json({ error: "Failed to create driver" });
+  }
+});
+
+// Archive & Restore
+app.patch('/api/vehicles/:id/archive', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const idx = vehicles.findIndex(v => v.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Vehicle not found" });
+  const vehicle = { ...vehicles[idx], archivedAt: new Date().toISOString() };
+  archivedVehicles.push(vehicle);
+  vehicles.splice(idx, 1);
+  console.log("📦 Vehicle archived:", vehicle);
+  res.json(vehicle);
+});
+
+app.patch('/api/drivers/:id/archive', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const idx = drivers.findIndex(d => d.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Driver not found" });
+  const driver = { ...drivers[idx], archivedAt: new Date().toISOString() };
+  archivedDrivers.push(driver);
+  drivers.splice(idx, 1);
+  console.log("📦 Driver archived:", driver);
+  res.json(driver);
+});
+
+app.patch('/api/vehicles/:id/restore', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const idx = archivedVehicles.findIndex(v => v.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Archived vehicle not found" });
+  const vehicle = { ...archivedVehicles[idx] };
+  delete vehicle.archivedAt;
+  vehicles.push(vehicle);
+  archivedVehicles.splice(idx, 1);
+  console.log("↩️ Vehicle restored:", vehicle);
+  res.json(vehicle);
+});
+
+app.patch('/api/drivers/:id/restore', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const idx = archivedDrivers.findIndex(d => d.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Archived driver not found" });
+  const driver = { ...archivedDrivers[idx] };
+  delete driver.archivedAt;
+  drivers.push(driver);
+  archivedDrivers.splice(idx, 1);
+  console.log("↩️ Driver restored:", driver);
+  res.json(driver);
+});
+
+// Optional: Add endpoint to check vehicle availability (for admin UI)
+app.get('/api/vehicles/:plateNo/availability', (req, res) => {
+  try {
+    const { plateNo } = req.params;
+    const normalized = plateNo.trim().toUpperCase();
+    const info = getAvailableSeats(normalized);
+    if (!info) {
+      return res.status(404).json({ error: "Vehicle not found" });
+    }
+    res.json({
+      plateNo: normalized,
+      totalSeats: info.total,
+      occupiedSeats: info.occupied,
+      availableSeats: info.available
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch availability" });
+  }
+});
+
+// Auth (optional)
+try {
+  const authRouter = require('./routes/auth');
+  app.use('/api/auth', authRouter);
+} catch (err) {
+  console.warn('Auth router not loaded:', err.message);
+}
+
+// Error handlers
+app.use((err, req, res, next) => {
+  console.error("Unhandled error:", err.stack);
+  res.status(500).json({ error: 'Server error' });
+});
+
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
+});
+
+app.listen(PORT, () => console.log(` Server running on port ${PORT}`));
