@@ -224,35 +224,4 @@ router.post('/logout', (req, res) => {
   res.json({ message: 'Logged out successfully' });
 });
 
-// ============================
-//         PROFILE ROUTE
-// ============================
-router.get('/profile', async (req, res) => {
-  try {
-    // Get token from cookie or header
-    const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
-    
-    if (!token) {
-      return res.status(401).json({ error: 'Not authenticated' });
-    }
-
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    const userResult = await pool.query(
-      'SELECT user_id, first_name, last_name, email, contact_no, user_type, office FROM tbl_users WHERE user_id = $1',
-      [decoded.userId]
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.json(userResult.rows[0]);
-  } catch (err) {
-    console.error('Profile error:', err);
-    res.status(401).json({ error: 'Invalid token' });
-  }
-});
-
 module.exports = router;
