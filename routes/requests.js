@@ -133,15 +133,7 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
     await client.query('BEGIN');
 
     const result = await client.query(
-      `UPDATE tbl_requests
-       SET status = $1, 
-           driver_name = $2, 
-           contact_no = $3, 
-           vehicle_type = $4, 
-           plate_no = $5,
-           reason_for_decline = $6,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE request_id = $7
+      `UPDATEx
        RETURNING *;`,
       [status, driver_name, contact_no, vehicle_type, plate_no, reason_for_decline, id]
     );

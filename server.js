@@ -449,3 +449,173 @@
   });
 
   app.listen(PORT, () => console.log(` Server running on port ${PORT}`));
+app.patch('/api/drivers/:id/archive', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const idx = drivers.findIndex(d => d.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Driver not found" });
+  const driver = { ...drivers[idx], archivedAt: new Date().toISOString() };
+  archivedDrivers.push(driver);
+  drivers.splice(idx, 1);
+  console.log("📦 Driver archived:", driver);
+  res.json(driver);
+});
+
+app.patch('/api/vehicles/:id/restore', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const idx = archivedVehicles.findIndex(v => v.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Archived vehicle not found" });
+  const vehicle = { ...archivedVehicles[idx] };
+  delete vehicle.archivedAt;
+  vehicles.push(vehicle);
+  archivedVehicles.splice(idx, 1);
+  console.log("↩️ Vehicle restored:", vehicle);
+  res.json(vehicle);
+});
+
+app.patch('/api/drivers/:id/restore', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const idx = archivedDrivers.findIndex(d => d.id === id);
+  if (idx === -1) return res.status(404).json({ error: "Archived driver not found" });
+  const driver = { ...archivedDrivers[idx] };
+  delete driver.archivedAt;
+  drivers.push(driver);
+  archivedDrivers.splice(idx, 1);
+  console.log("↩️ Driver restored:", driver);
+  res.json(driver);
+});
+
+// Optional: Add endpoint to check vehicle availability (for admin UI)
+app.get('/api/vehicles/:plateNo/availability', (req, res) => {
+  try {
+    const { plateNo } = req.params;
+    const normalized = plateNo.trim().toUpperCase();
+    const info = getAvailableSeats(normalized);
+    if (!info) {
+      return res.status(404).json({ error: "Vehicle not found" });
+    }
+    res.json({
+      plateNo: normalized,
+      totalSeats: info.total,
+      occupiedSeats: info.occupied,
+      availableSeats: info.available
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch availability" });
+  }
+});
+
+// Auth (optional)
+try {
+  const authRouter = require('./routes/auth');
+  app.use('/api/auth', authRouter);
+} catch (err) {
+  console.warn('Auth router not loaded:', err.message);
+}
+
+// Error handlers
+app.use((err, req, res, next) => {
+  console.error("Unhandled error:", err.stack);
+  res.status(500).json({ error: 'Server error' });
+});
+// === NEW: Dashboard Stats Endpoint ===
+app.get('/api/stats', (req, res) => {
+  try {
+    // Calculate basic stats
+    const totalRequests = requests.length;
+    const pendingApproval = requests.filter(req => req.status === "Pending").length;
+    const completedTrips = requests.filter(req => req.status === "Completed").length;
+
+    // This month count
+    const now = new Date();
+    const thisMonth = requests.filter(req => {
+      if (!req.date) return false;
+      const reqDate = new Date(req.date);
+      return (
+        reqDate.getMonth() === now.getMonth() &&
+        reqDate.getFullYear() === now.getFullYear()
+      );
+    }).length;
+
+    // Format recent requests
+    const recentRequests = requests
+      .filter(req => ['Pending', 'Accepted', 'Completed', 'Declined'].includes(req.status))
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, 3)
+      .map(req => {
+        // Determine time ago
+        const reqDate = new Date(req.date);
+        const diffMs = Date.now() - reqDate.getTime();
+        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        let timeAgo = 'Today';
+        if (diffDays === 1) timeAgo = '1 day ago';
+        else if (diffDays > 1 && diffDays < 7) timeAgo = `${diffDays} days ago`;
+        else if (diffDays >= 7) timeAgo = req.date;
+
+        return {
+          id: `TR-${req.id}`,
+          status: req.status.toLowerCase(),
+          destination: req.destination || 'N/A',
+          passenger: Array.isArray(req.names) 
+            ? req.names.join(', ') 
+            : (req.names || req.requestingOffice || 'Unknown'),
+          timeAgo
+        };
+      });
+
+    // Build vehicle status (mock enhanced with real data)
+    const vehicleStatus = vehicles
+      .filter(v => !v.archivedAt)
+      .slice(0, 3)
+      .map((v, idx) => {
+        // Check if vehicle is assigned to an accepted request today
+        const isAssigned = requests.some(req => 
+          req.status === 'Accepted' &&
+          req.plateNo === v.plateNo
+        );
+
+        return {
+          id: `V-${v.id}`,
+          status: isAssigned ? 'in use' : 'available',
+          model: `${v.vehicleType} (${v.plateNo})`,
+          driver: (() => {
+            const assigned = requests.find(req => 
+              req.status === 'Accepted' && 
+              req.plateNo === v.plateNo
+            );
+            return assigned?.driver || 'Unassigned';
+          })(),
+          fuel: 85 - (idx * 10) // mock: 85, 75, 65
+        };
+      });
+
+    // If fewer than 3 vehicles, pad with mock maintenance vehicles
+    while (vehicleStatus.length < 3) {
+      const id = vehicleStatus.length + 1;
+      vehicleStatus.push({
+        id: `V-${Date.now() + id}`,
+        status: 'maintenance',
+        model: `Vehicle ${id}`,
+        driver: 'Unassigned',
+        fuel: 95
+      });
+    }
+
+    res.json({
+      totalRequests,
+      pendingApproval,
+      completedTrips,
+      thisMonth,
+      recentRequests,
+      vehicleStatus
+    });
+  } catch (error) {
+    console.error('Stats endpoint error:', error);
+    res.status(500).json({ error: 'Failed to fetch dashboard stats' });
+  }
+});
+
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
+});
+
+app.listen(PORT, () => console.log(` Server running on port ${PORT}`));
