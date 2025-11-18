@@ -1,3 +1,4 @@
+// server.js (or app.js)
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -437,11 +438,14 @@ try {
   console.warn('Auth router not loaded:', err.message);
 }
 
-// Error handlers
-app.use((err, req, res, next) => {
-  console.error("Unhandled error:", err.stack);
-  res.status(500).json({ error: 'Server error' });
-});
+// === NEW: Profile Routes ===
+try {
+  const profileRouter = require('./routes/profile');
+  app.use(profileRouter); // Mount at root: PATCH /profile
+} catch (err) {
+  console.warn('Profile router not loaded:', err.message);
+}
+
 // === NEW: Dashboard Stats Endpoint ===
 app.get('/api/stats', (req, res) => {
   try {
@@ -539,8 +543,14 @@ app.get('/api/stats', (req, res) => {
   }
 });
 
+// Error handlers
+app.use((err, req, res, next) => {
+  console.error("Unhandled error:", err.stack);
+  res.status(500).json({ error: 'Server error' });
+});
+
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
-app.listen(PORT, () => console.log(` Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
