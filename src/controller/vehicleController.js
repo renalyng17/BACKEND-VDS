@@ -1,105 +1,74 @@
+// controllers/vehicleController.js
 const Vehicle = require('../models/Vehicle');
-const ArchivedVehicle = require('../models/ArchivedVehicle');
+const pool = require('../db'); // Make sure this exports pool directly
 
-// GET /api/vehicles
 exports.getVehicles = async (req, res) => {
   try {
     const vehicles = await Vehicle.findAll({ where: { archivedAt: null } });
-    res.status(200).json(vehicles);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to fetch vehicles' });
-  }
-};
+    if (vehicles.length === 0) return res.json([]);
 
-// POST /api/vehicles
-exports.createVehicle = async (req, res) => {
-  try {
-    const { vehicleType, plateNo, capacity, fuelType, fleetCard, rfid } = req.body;
+    const plateNos = vehicles.map(v => v.plateNo);
 
-    if (!vehicleType || !plateNo || !capacity || !fuelType) {
-      return res.status(400).json({ error: 'Required fields missing' });
-    }
+    // ✅ Get active trips with passenger counts
+    const activeTripsQuery = `
+      SELECT 
+        r.plate_no,
+        r.driver_name,
+        r.passenger_names
+      FROM tbl_requests r
+      WHERE 
+        r.plate_no = ANY($1)
+        AND r.status = 'Accepted'
+        AND r.departure_time <= NOW()
+        AND r.arrival_time >= NOW()
+    `;
 
-    const existing = await Vehicle.findOne({
-      where: { plateNo: plateNo.trim().toUpperCase(), archivedAt: null }
+    const { rows: activeTrips } = await pool.query(activeTripsQuery, [plateNos]);
+
+    // Create map: plate_no → { driver, passengerCount }
+    const tripMap = {};
+    activeTrips.forEach(trip => {
+      let passengerCount = 0;
+      if (Array.isArray(trip.passenger_names)) {
+        passengerCount = trip.passenger_names.length;
+      } else if (trip.passenger_names) {
+        passengerCount = trip.passenger_names.toString().split(',').length;
+      } else {
+        passengerCount = 1;
+      }
+
+      tripMap[trip.plate_no] = {
+        driver: trip.driver_name,
+        passengerCount: passengerCount
+      };
     });
 
-    if (existing) {
-      return res.status(409).json({ error: 'Vehicle with this plate number already exists' });
-    }
+    // Enrich vehicles
+    const enrichedVehicles = vehicles.map(vehicle => {
+      const isActive = tripMap.hasOwnProperty(vehicle.plateNo);
+      const realTimeStatus = 
+        vehicle.status === 'maintenance' 
+          ? 'maintenance'
+          : isActive 
+            ? 'in use'
+            : 'available';
 
-    const newVehicle = await Vehicle.create({
-      vehicleType,
-      plateNo: plateNo.trim().toUpperCase(),
-      capacity: parseInt(capacity),
-      fuelType,
-      fleetCard,
-      rfid
+      const passengerCount = isActive ? tripMap[vehicle.plateNo].passengerCount : 0;
+      const availableSeats = Math.max(0, vehicle.capacity - passengerCount);
+
+      return {
+        ...vehicle.toJSON(),
+        currentStatus: realTimeStatus,
+        currentDriver: isActive ? tripMap[vehicle.plateNo].driver : null,
+        availableSeats: availableSeats,
+        totalSeats: vehicle.capacity,
+        model: `${vehicle.vehicleType} (${vehicle.plateNo})`
+      };
     });
 
-    res.status(201).json(newVehicle);
+    res.status(200).json(enrichedVehicles);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to create vehicle' });
-  }
-};
-
-// PATCH /api/vehicles/:id/archive
-exports.archiveVehicle = async (req, res) => {
-  try {
-    const vehicleId = req.params.id;
-    const vehicle = await Vehicle.findByPk(vehicleId);
-
-    if (!vehicle) {
-      return res.status(404).json({ error: 'Vehicle not found' });
-    }
-
-    await ArchivedVehicle.create({
-      ...vehicle.toJSON(),
-      archivedAt: new Date()
-    });
-
-    await vehicle.destroy();
-
-    res.status(200).json({ message: 'Vehicle archived successfully' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to archive vehicle' });
-  }
-};
-
-// PUT /api/vehicles/:id/restore
-exports.restoreVehicle = async (req, res) => {
-  try {
-    const vehicleId = req.params.id;
-    const archivedVehicle = await ArchivedVehicle.findByPk(vehicleId);
-
-    if (!archivedVehicle) {
-      return res.status(404).json({ error: 'Archived vehicle not found' });
-    }
-
-    await Vehicle.create({
-      ...archivedVehicle.toJSON(),
-      archivedAt: null
-    });
-
-    await archivedVehicle.destroy();
-
-    res.status(200).json({ message: 'Vehicle restored successfully' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to restore vehicle' });
-  }
-};
-
-// GET /api/vehicles/archived
-exports.getArchivedVehicles = async (req, res) => {
-  try {
-    const archivedVehicles = await ArchivedVehicle.findAll();
-    res.status(200).json(archivedVehicles);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to fetch archived vehicles' });
+    console.error('Vehicle status error:', error);
+    res.status(500).json({ error: 'Failed to fetch vehicle status' });
   }
 };
