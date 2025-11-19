@@ -441,7 +441,8 @@ try {
 // === NEW: Profile Routes ===
 try {
   const profileRouter = require('./routes/profile');
-  app.use(profileRouter); // Mount at root: PATCH /profile
+  // ✅ CORRECT: Mounts profile routes at /profile
+app.use('/profile', require('./routes/profile'));
 } catch (err) {
   console.warn('Profile router not loaded:', err.message);
 }
