@@ -103,15 +103,19 @@ export const getRequests = async () => {
   return await response.json();
 };
 
-// ✅ FIXED: Use PUT to match your backend route
+//  FIXED: Use PUT to match your backend route
 export const updateRequestStatus = async (id, updateData) => {
   const response = await fetch(`${API_BASE_URL}/requests/${id}`, {
-    method: 'PUT', // 🔥 Changed from PATCH to PUT
+    method: 'PUT', //  Changed from PATCH to PUT
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updateData),
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
+    // Check if the error is specifically about driver assignment
+    if (error.message && error.message.includes("already assigned")) {
+      throw new Error(error.message); // Return the original error message
+    }
     throw new Error(error.message || 'Failed to update request');
   }
   return await response.json();

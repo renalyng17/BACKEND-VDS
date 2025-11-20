@@ -1,3 +1,11 @@
+// routes/requests.js
+
+const express = require('express');
+const { authenticateToken } = require('../middleware/auth'); // Assuming you have an auth middleware
+const { pool } = require('../utils/db'); // Assuming you have a db config file exporting the pool
+
+const router = express.Router();
+
 // ============================
 //      UPDATE REQUEST STATUS (WITH DRIVER + SEAT VALIDATION)
 // ============================
@@ -19,12 +27,13 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
-    // Fetch current request to get passenger count and date
+    // Fetch current request to get passenger count, date, and pickup_location
     const currentReq = await client.query(
       `SELECT 
          passenger_names, 
          status AS current_status,
-         departure_time
+         departure_time,
+         pickup_location -- NEW: Fetch pickup_location
        FROM tbl_requests 
        WHERE request_id = $1`,
       [id]
@@ -38,7 +47,7 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
-    const { passenger_names, current_status, departure_time } = currentReq.rows[0];
+    const { passenger_names, current_status, departure_time, pickup_location } = currentReq.rows[0]; // NEW: Destructure pickup_location
     const groupSize = Array.isArray(passenger_names) 
       ? passenger_names.length 
       : (passenger_names ? passenger_names.toString().split(',').length : 1);
@@ -132,11 +141,23 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
     // 🔁 Proceed with status update (inside transaction)
     await client.query('BEGIN');
 
+    // NEW: Include pickup_location in the RETURNING clause to ensure it's available in the response
     const result = await client.query(
-      `UPDATEx
-       RETURNING *;`,
+      `UPDATE tbl_requests 
+       SET 
+         status = $1, 
+         driver_name = $2, 
+         contact_no = $3, 
+         vehicle_type = $4, 
+         plate_no = $5, 
+         reason_for_decline = $6
+       WHERE request_id = $7 
+       RETURNING 
+         request_id, user_id, departure_time, arrival_time, pickup_location, destination, -- NEW: Include pickup_location
+         status, passenger_names, requesting_office, driver_name, contact_no, vehicle_type, plate_no;`,
       [status, driver_name, contact_no, vehicle_type, plate_no, reason_for_decline, id]
     );
+
 
     if (result.rows.length === 0) {
       await client.query('ROLLBACK');
@@ -154,7 +175,7 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
       [
         id,
         'status_update',
-        `Request to ${result.rows[0].destination} has been ${status.toLowerCase()}`
+        `Request from ${result.rows[0].pickup_location} to ${result.rows[0].destination} has been ${status.toLowerCase()}` // NEW: Include pickup_location in message
       ]
     );
 
@@ -168,6 +189,7 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
       fromTime: updated.departure_time ? updated.departure_time.toISOString().split('T')[1]?.slice(0, 5) : null,
       toDate: updated.arrival_time ? updated.arrival_time.toISOString().split('T')[0] : null,
       toTime: updated.arrival_time ? updated.arrival_time.toISOString().split('T')[1]?.slice(0, 5) : null,
+      pickupLocation: updated.pickup_location, // NEW: Include pickup_location in the response
       destination: updated.destination,
       status: updated.status,
       names: Array.isArray(updated.passenger_names) ? updated.passenger_names : [],
@@ -199,3 +221,5 @@ router.put('/:id/status', authenticateToken, async (req, res) => {
     client.release();
   }
 }); 
+
+module.exports = router;
