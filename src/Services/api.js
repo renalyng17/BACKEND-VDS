@@ -1,546 +1,148 @@
-const express = require('express');
-const cors = require('cors');
-const cookieParser = require('cookie-parser');
-require('dotenv').config();
+const API_BASE_URL = 'http://localhost:3001/api';
 
-const app = express();
-const PORT = process.env.PORT || 3001;
-
-const corsOptions = {
-  origin: 'http://localhost:5173',
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']
+// Helper: Get auth token
+const getAuthToken = () => {
+  return localStorage.getItem('token');
 };
 
-app.use(cors(corsOptions));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
-
-// In-memory storage (replace with database in production)
-let requests = [];
-let notifications = [];
-let archivedVehicles = [];
-let archivedDrivers = [];
-let drivers = [];
-let vehicles = [];
-
-// === Helper: Get available seats for a vehicle ===
-const getAvailableSeats = (plateNo) => {
-  const vehicle = vehicles.find(v => v.plateNo === plateNo && !v.archivedAt);
-  if (!vehicle) return null;
-
-  const occupied = requests
-    .filter(req => 
-      req.status === "Accepted" && 
-      req.plateNo === plateNo
-    )
-    .reduce((total, req) => {
-      const groupSize = Array.isArray(req.names) ? req.names.length : 1;
-      return total + groupSize;
-    }, 0);
-
-  return {
-    total: vehicle.capacity,
-    occupied,
-    available: vehicle.capacity - occupied
+// Enhanced API request handler
+const apiRequest = async (endpoint, options = {}) => {
+  const token = getAuthToken();
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(token && { 'Authorization': `Bearer ${token}` }),
+    ...options.headers,
   };
+
+  try {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers,
+      credentials: 'include',
+    });
+
+    // Parse JSON, but be safe if response is empty or not JSON
+    let data;
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      data = await response.json();
+    } else {
+      data = await response.text();
+    }
+
+    if (!response.ok) {
+      // Use the backend's error message directly if available
+      let errorMessage = 'An unknown error occurred';
+      
+      if (typeof data === 'object' && data !== null && data.error) {
+        errorMessage = data.error; // This is your snackbar message!
+      } else if (typeof data === 'string' && data) {
+        errorMessage = data;
+      } else {
+        errorMessage = `Request failed: ${response.status} ${response.statusText}`;
+      }
+
+      // Throw with ONLY the message — no extra wrapping
+      const error = new Error(errorMessage);
+      error.status = response.status;
+      error.isApiError = true; // Optional flag for UI to distinguish
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    // Handle network-level errors (e.g., server down)
+    if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+      const networkError = new Error('Network error: Unable to connect to server');
+      networkError.isNetworkError = true;
+      throw networkError;
+    }
+    // Re-throw API or other errors
+    throw error;
+  }
 };
 
-// === Helper: Update request status (with SEAT + DRIVER validation) ===
-// 🔄 Returns { success: true, data } OR { success: false, message, code }
-const updateRequestStatus = (request, updateData) => {
-  const {
-    status,
-    driver, driver_name,
-    vehicleType, vehicle_type,
-    plateNo, plate_no,
-    reason, reason_for_decline
-  } = updateData;
+// Export all API methods
+export const api = {
+  // Authentication
+  login: (credentials) => apiRequest('/auth/login', { method: 'POST', body: JSON.stringify(credentials) }),
+  register: (userData) => apiRequest('/auth/register', { method: 'POST', body: JSON.stringify(userData) }),
+  logout: () => apiRequest('/auth/logout', { method: 'POST' }),
+  getProfile: () => apiRequest('/auth/profile'),
+  resetPassword: (data) => apiRequest('/auth/reset-password', { method: 'POST', body: JSON.stringify(data) }),
 
-  let finalStatus = status;
-  if (status === "Accept") finalStatus = "Accepted";
-  if (status === "Decline") finalStatus = "Declined";
+  // REQUESTS
+  getRequests: () => apiRequest('/requests'),
+  getRequest: (id) => apiRequest(`/requests/${id}`),
+  createRequest: (data) => apiRequest('/requests', { method: 'POST', body: JSON.stringify(data) }),
+  
+  // FIXED: Match backend route (PUT /requests/:id)
+  updateRequestStatus: (id, data) => {
+    const payload = {
+      status: data.status,
+      driver: data.driver_name,
+      vehicleType: data.vehicle_type,
+      plateNo: data.plate_no,
+      reason: data.reason_for_decline,
+    };
+    return apiRequest(`/requests/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+  },
+  
+  deleteRequest: (id) => apiRequest(`/requests/${id}`, { method: 'DELETE' }),
 
-  // 🔒 VALIDATION: Only when accepting
-  if (finalStatus === "Accepted") {
-    const selectedDriver = (driver_name || driver)?.trim();
-    const selectedPlate = (plate_no || plateNo)?.trim();
+  // NOTIFICATIONS
+  getNotifications: () => apiRequest('/notifications'),
+  markNotificationAsRead: (id) => 
+    apiRequest(`/notifications/${id}/read`, { method: 'PUT' }),
+  getUnreadNotificationsCount: () => apiRequest('/notifications/unread/count'),
+  markAllNotificationsAsRead: () => 
+    apiRequest('/notifications/mark-all-read', { method: 'PUT' }),
 
-    if (!selectedDriver) {
-      return { success: false, message: "Driver name is required to accept a request.", code: 400 };
+  // VEHICLES
+  getVehicles: async () => {
+    try {
+      const data = await apiRequest('/vehicles');
+      return Array.isArray(data) ? data : [];
+    } catch (error) {
+      console.error('Error in getVehicles:', error);
+      return [];
     }
-    if (!selectedPlate) {
-      return { success: false, message: "Vehicle plate number is required to accept a request.", code: 400 };
+  },
+  
+  createVehicle: (data) => apiRequest('/vehicles', { method: 'POST', body: JSON.stringify(data) }),
+  archiveVehicle: (id) => apiRequest(`/vehicles/${id}/archive`, { method: 'PATCH' }),
+  restoreVehicle: (id) => apiRequest(`/vehicles/${id}/restore`, { method: 'PATCH' }), // ⚠️ Fixed: was PUT, but backend uses PATCH
+  getArchivedVehicles: async () => {
+    try {
+      const data = await apiRequest('/vehicles/archived');
+      return Array.isArray(data) ? data : [];
+    } catch (error) {
+      console.error('Error in getArchivedVehicles:', error);
+      return [];
     }
+  },
 
-    // ✅ DRIVER CONFLICT CHECK
-    const existingAssignment = requests.find(req =>
-      req.id !== request.id &&
-      (req.status === "Accepted" || req.status === "Pending") &&
-      req.driver?.trim() === selectedDriver &&
-      req.fromDate === request.fromDate
-    );
-
-    if (existingAssignment) {
-      return {
-        success: false,
-        code: 409,
-        message: `Driver "${selectedDriver}" is already assigned to another trip on ${request.fromDate} (Vehicle: ${existingAssignment.plateNo})`
-      };
+  // DRIVERS
+  getDrivers: async () => {
+    try {
+      const data = await apiRequest('/drivers');
+      return Array.isArray(data) ? data : [];
+    } catch (error) {
+      console.error('Error in getDrivers:', error);
+      return [];
     }
-
-    // ✅ VEHICLE SEAT VALIDATION
-    const seatInfo = getAvailableSeats(selectedPlate);
-    if (!seatInfo) {
-      return { success: false, message: `Vehicle with plate ${selectedPlate} not found.`, code: 404 };
+  },
+  
+  createDriver: (data) => apiRequest('/drivers', { method: 'POST', body: JSON.stringify(data) }),
+  archiveDriver: (id) => apiRequest(`/drivers/${id}/archive`, { method: 'PATCH' }),
+  restoreDriver: (id) => apiRequest(`/drivers/${id}/restore`, { method: 'PATCH' }), // ⚠️ Fixed: was PUT, but backend uses PATCH
+  getArchivedDrivers: async () => {
+    try {
+      const data = await apiRequest('/drivers/archived');
+      return Array.isArray(data) ? data : [];
+    } catch (error) {
+      console.error('Error in getArchivedDrivers:', error);
+      return [];
     }
-
-    const groupSize = Array.isArray(request.names) ? request.names.length : 1;
-    if (groupSize > seatInfo.available) {
-      return {
-        success: false,
-        code: 400,
-        message: `Not enough seats! Vehicle has ${seatInfo.available} seat(s) left, but group needs ${groupSize}.`
-      };
-    }
-
-    console.log(`✅ Seat check passed: ${groupSize} passengers fit in ${selectedPlate} (${seatInfo.available} → ${seatInfo.available - groupSize} left)`);
-  }
-
-  // ✅ Proceed with update
-  request.status = finalStatus;
-  request.processedDate = new Date().toISOString().split('T')[0];
-
-  if (finalStatus === "Accepted") {
-    request.driver = (driver_name || driver)?.trim();
-    request.vehicleType = vehicle_type || vehicleType;
-    request.plateNo = (plate_no || plateNo)?.trim();
-  } else if (finalStatus === "Declined") {
-    request.reason = reason_for_decline || reason;
-  }
-
-  // ✅ LOG TO TERMINAL
-  if (finalStatus === "Accepted") {
-    console.log(`✅ Request ${request.id} ACCEPTED | Driver: ${request.driver} | Vehicle: ${request.vehicleType} (${request.plateNo})`);
-  } else if (finalStatus === "Declined") {
-    console.log(`❌ Request ${request.id} DECLINED | Reason: ${request.reason || 'No reason provided'}`);
-  }
-
-  // Add notification
-  const notification = {
-    id: Date.now(),
-    requestId: request.id,
-    type: "status_update",
-    message: `Request to ${request.destination} has been ${finalStatus}`,
-    timestamp: new Date().toISOString(),
-    read: false
-  };
-  notifications.push(notification);
-
-  return { success: true, data: request };
+  },
 };
-
-// === Routes ===
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK' });
-});
-
-// Get all requests
-app.get('/api/requests', (req, res) => {
-  res.json(requests);
-});
-
-// Create a new request
-app.post('/api/requests', (req, res) => {
-  try {
-    const newRequest = {
-      id: Date.now(),
-      ...req.body,
-      status: "Pending",
-      date: new Date().toISOString().split('T')[0]
-    };
-
-    if (!newRequest.fromDate) {
-      return res.status(400).json({ error: "fromDate is required" });
-    }
-
-    requests.push(newRequest);
-
-    const notification = {
-      id: Date.now(),
-      requestId: newRequest.id,
-      type: "new_request",
-      message: `New travel request from ${newRequest.names?.join(', ') || 'Unknown'} (${newRequest.requestingOffice || 'N/A'}) to ${newRequest.destination || 'Unknown'}.`,
-      timestamp: new Date().toISOString(),
-      read: false
-    };
-    notifications.push(notification);
-
-    res.status(201).json(newRequest);
-  } catch (error) {
-    console.error("Create request error:", error);
-    res.status(500).json({ error: "Failed to create request" });
-  }
-});
-
-// Get notifications = pending requests
-app.get('/api/notifications', (req, res) => {
-  try {
-    const pending = requests.filter(req => req.status === "Pending");
-    const enriched = pending.map(req => ({
-      id: req.id,
-      requestId: req.id,
-      type: "new_request",
-      message: `New travel request from ${req.names?.join(', ') || 'Unknown'} (${req.requestingOffice || 'N/A'}) to ${req.destination || 'Unknown'}.`,
-      timestamp: req.date ? new Date(req.date).toISOString() : new Date().toISOString(),
-      read: false,
-      ...req
-    }));
-    res.json(enriched);
-  } catch (error) {
-    console.error("Error fetching notifications:", error);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// Get unread count
-app.get('/api/notifications/unread/count', (req, res) => {
-  try {
-    const count = notifications.filter(n => !n.read).length;
-    res.json({ count });
-  } catch (error) {
-    console.error("Get unread count error:", error);
-    res.status(500).json({ error: "Failed to get unread notifications count" });
-  }
-});
-
-// Update request status — main endpoint
-app.put('/api/requests/:id', (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const request = requests.find(r => r.id === id);
-
-  if (!request) {
-    return res.status(404).json({ error: "Request not found" });
-  }
-
-  const result = updateRequestStatus(request, req.body);
-
-  if (result.success) {
-    res.json(result.data);
-  } else {
-    // Send user-friendly error for frontend snackbar
-    res.status(result.code || 400).json({ error: result.message });
-  }
-});
-
-// Update request status via /status (for compatibility)
-app.put('/api/requests/:id/status', (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const request = requests.find(r => r.id === id);
-
-  if (!request) {
-    return res.status(404).json({ error: "Request not found" });
-  }
-
-  const result = updateRequestStatus(request, req.body);
-
-  if (result.success) {
-    res.json(result.data);
-  } else {
-    res.status(result.code || 400).json({ error: result.message });
-  }
-});
-
-// Get a specific request
-app.get('/api/requests/:id', (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const request = requests.find(r => r.id === id);
-    if (request) {
-      res.json(request);
-    } else {
-      res.status(404).json({ error: "Request not found" });
-    }
-  } catch (error) {
-    console.error("Get request error:", error);
-    res.status(500).json({ error: "Failed to fetch request" });
-  }
-});
-
-// Delete a request
-app.delete('/api/requests/:id', (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const index = requests.findIndex(r => r.id === id);
-    if (index !== -1) {
-      requests.splice(index, 1);
-      res.json({ message: "Request deleted successfully" });
-    } else {
-      res.status(404).json({ error: "Request not found" });
-    }
-  } catch (error) {
-    console.error("Delete request error:", error);
-    res.status(500).json({ error: "Failed to delete request" });
-  }
-});
-
-// Get available drivers
-app.get('/api/drivers', (req, res) => {
-  res.json(drivers.filter(d => !d.archivedAt));
-});
-
-// Get available vehicles
-app.get('/api/vehicles', (req, res) => {
-  res.json(vehicles.filter(v => !v.archivedAt));
-});
-
-// Get archived
-app.get('/api/vehicles/archived', (req, res) => {
-  res.json(archivedVehicles);
-});
-app.get('/api/drivers/archived', (req, res) => {
-  res.json(archivedDrivers);
-});
-
-// Create Vehicle
-app.post('/api/vehicles', (req, res) => {
-  try {
-    const { vehicleType, plateNo, capacity, fuelType, fleetCard, rfid } = req.body;
-    if (!vehicleType || !plateNo || !capacity || !fuelType) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-    const normalizedPlateNo = plateNo.trim().toUpperCase();
-    const existing = vehicles.find(v => v.plateNo?.trim().toUpperCase() === normalizedPlateNo && !v.archivedAt);
-    if (existing) {
-      return res.status(409).json({ error: "Vehicle with this plate number already exists." });
-    }
-    const parsedCapacity = parseInt(capacity, 10);
-    if (isNaN(parsedCapacity)) {
-      return res.status(400).json({ error: "Invalid capacity" });
-    }
-    const newVehicle = {
-      id: Date.now(),
-      vehicleType: vehicleType.trim(),
-      plateNo: normalizedPlateNo,
-      capacity: parsedCapacity,
-      fuelType: fuelType.trim(),
-      fleetCard: (fleetCard || "").trim(),
-      rfid: (rfid || "").trim(),
-    };
-    vehicles.push(newVehicle);
-    console.log("✅ Vehicle created:", newVehicle);
-    res.status(201).json(newVehicle);
-  } catch (error) {
-    console.error("Create vehicle error:", error);
-    res.status(500).json({ error: "Failed to create vehicle" });
-  }
-});
-
-// Create Driver
-app.post('/api/drivers', (req, res) => {
-  try {
-    const { name, contact, email } = req.body;
-    if (!name || !contact || !email) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-    const newDriver = {
-      id: Date.now(),
-      name: name.trim(),
-      contact: contact.trim(),
-      email: email.trim(),
-      status: "Active"
-    };
-    drivers.push(newDriver);
-    console.log("✅ Driver created:", newDriver);
-    res.status(201).json(newDriver);
-  } catch (error) {
-    console.error("Create driver error:", error);
-    res.status(500).json({ error: "Failed to create driver" });
-  }
-});
-
-// Archive & Restore
-app.patch('/api/vehicles/:id/archive', (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const idx = vehicles.findIndex(v => v.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Vehicle not found" });
-  const vehicle = { ...vehicles[idx], archivedAt: new Date().toISOString() };
-  archivedVehicles.push(vehicle);
-  vehicles.splice(idx, 1);
-  console.log("📦 Vehicle archived:", vehicle);
-  res.json(vehicle);
-});
-
-app.patch('/api/drivers/:id/archive', (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const idx = drivers.findIndex(d => d.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Driver not found" });
-  const driver = { ...drivers[idx], archivedAt: new Date().toISOString() };
-  archivedDrivers.push(driver);
-  drivers.splice(idx, 1);
-  console.log("📦 Driver archived:", driver);
-  res.json(driver);
-});
-
-app.patch('/api/vehicles/:id/restore', (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const idx = archivedVehicles.findIndex(v => v.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Archived vehicle not found" });
-  const vehicle = { ...archivedVehicles[idx] };
-  delete vehicle.archivedAt;
-  vehicles.push(vehicle);
-  archivedVehicles.splice(idx, 1);
-  console.log("↩️ Vehicle restored:", vehicle);
-  res.json(vehicle);
-});
-
-app.patch('/api/drivers/:id/restore', (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const idx = archivedDrivers.findIndex(d => d.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Archived driver not found" });
-  const driver = { ...archivedDrivers[idx] };
-  delete driver.archivedAt;
-  drivers.push(driver);
-  archivedDrivers.splice(idx, 1);
-  console.log("↩️ Driver restored:", driver);
-  res.json(driver);
-});
-
-// Optional: Add endpoint to check vehicle availability (for admin UI)
-app.get('/api/vehicles/:plateNo/availability', (req, res) => {
-  try {
-    const { plateNo } = req.params;
-    const normalized = plateNo.trim().toUpperCase();
-    const info = getAvailableSeats(normalized);
-    if (!info) {
-      return res.status(404).json({ error: "Vehicle not found" });
-    }
-    res.json({
-      plateNo: normalized,
-      totalSeats: info.total,
-      occupiedSeats: info.occupied,
-      availableSeats: info.available
-    });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch availability" });
-  }
-});
-
-// Auth (optional)
-try {
-  const authRouter = require('./routes/auth');
-  app.use('/api/auth', authRouter);
-} catch (err) {
-  console.warn('Auth router not loaded:', err.message);
-}
-
-// Error handlers
-app.use((err, req, res, next) => {
-  console.error("Unhandled error:", err.stack);
-  res.status(500).json({ error: 'Server error' });
-});
-// === NEW: Dashboard Stats Endpoint ===
-app.get('/api/stats', (req, res) => {
-  try {
-    // Calculate basic stats
-    const totalRequests = requests.length;
-    const pendingApproval = requests.filter(req => req.status === "Pending").length;
-    const completedTrips = requests.filter(req => req.status === "Completed").length;
-
-    // This month count
-    const now = new Date();
-    const thisMonth = requests.filter(req => {
-      if (!req.date) return false;
-      const reqDate = new Date(req.date);
-      return (
-        reqDate.getMonth() === now.getMonth() &&
-        reqDate.getFullYear() === now.getFullYear()
-      );
-    }).length;
-
-    // Format recent requests
-    const recentRequests = requests
-      .filter(req => ['Pending', 'Accepted', 'Completed', 'Declined'].includes(req.status))
-      .sort((a, b) => new Date(b.date) - new Date(a.date))
-      .slice(0, 3)
-      .map(req => {
-        // Determine time ago
-        const reqDate = new Date(req.date);
-        const diffMs = Date.now() - reqDate.getTime();
-        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-        let timeAgo = 'Today';
-        if (diffDays === 1) timeAgo = '1 day ago';
-        else if (diffDays > 1 && diffDays < 7) timeAgo = `${diffDays} days ago`;
-        else if (diffDays >= 7) timeAgo = req.date;
-
-        return {
-          id: `TR-${req.id}`,
-          status: req.status.toLowerCase(),
-          destination: req.destination || 'N/A',
-          passenger: Array.isArray(req.names) 
-            ? req.names.join(', ') 
-            : (req.names || req.requestingOffice || 'Unknown'),
-          timeAgo
-        };
-      });
-
-    // Build vehicle status (mock enhanced with real data)
-    const vehicleStatus = vehicles
-      .filter(v => !v.archivedAt)
-      .slice(0, 3)
-      .map((v, idx) => {
-        // Check if vehicle is assigned to an accepted request today
-        const isAssigned = requests.some(req => 
-          req.status === 'Accepted' &&
-          req.plateNo === v.plateNo
-        );
-
-        return {
-          id: `V-${v.id}`,
-          status: isAssigned ? 'in use' : 'available',
-          model: `${v.vehicleType} (${v.plateNo})`,
-          driver: (() => {
-            const assigned = requests.find(req => 
-              req.status === 'Accepted' && 
-              req.plateNo === v.plateNo
-            );
-            return assigned?.driver || 'Unassigned';
-          })(),
-          fuel: 85 - (idx * 10) // mock: 85, 75, 65
-        };
-      });
-
-    // If fewer than 3 vehicles, pad with mock maintenance vehicles
-    while (vehicleStatus.length < 3) {
-      const id = vehicleStatus.length + 1;
-      vehicleStatus.push({
-        id: `V-${Date.now() + id}`,
-        status: 'maintenance',
-        model: `Vehicle ${id}`,
-        driver: 'Unassigned',
-        fuel: 95
-      });
-    }
-
-    res.json({
-      totalRequests,
-      pendingApproval,
-      completedTrips,
-      thisMonth,
-      recentRequests,
-      vehicleStatus
-    });
-  } catch (error) {
-    console.error('Stats endpoint error:', error);
-    res.status(500).json({ error: 'Failed to fetch dashboard stats' });
-  }
-});
-
-app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
-});
-
-app.listen(PORT, () => console.log(` Server running on port ${PORT}`));

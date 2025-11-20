@@ -11,6 +11,7 @@ const corsOptions = {
   origin: 'http://localhost:5173',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']
+  
 };
 
 app.use(cors(corsOptions));
@@ -48,7 +49,8 @@ const getAvailableSeats = (plateNo) => {
   };
 };
 
-// === Helper: Update request status ===
+// === Helper: Update request status (with SEAT + DRIVER time-range validation) ===
+// 🔄 Returns { success: true, data } OR { success: false, message, code }
 const updateRequestStatus = (request, updateData) => {
   const {
     status,
@@ -73,18 +75,30 @@ const updateRequestStatus = (request, updateData) => {
       return { success: false, message: "Vehicle plate number is required to accept a request.", code: 400 };
     }
 
+    // ✅ DRIVER TIME-RANGE CONFLICT CHECK
+    const newFromDate = request.fromDate; // e.g., "2025-11-23"
+    const newFromTime = request.fromTime; // e.g., "10:00"
+    const newToTime = request.toTime;     // e.g., "12:00"
+
+    if (!newFromTime || !newToTime) {
+      return { success: false, message: "Trip start and end times are required to accept a request.", code: 400 };
+    }
+
     const existingAssignment = requests.find(req =>
       req.id !== request.id &&
       (req.status === "Accepted" || req.status === "Pending") &&
       req.driver?.trim() === selectedDriver &&
-      req.fromDate === request.fromDate
+      req.fromDate === newFromDate // Same date
+      // Time overlap check: New start < existing end AND new end > existing start
+      && newFromTime < req.toTime
+      && newToTime > req.fromTime
     );
 
     if (existingAssignment) {
       return {
         success: false,
         code: 409,
-        message: `Driver "${selectedDriver}" is already assigned to another trip on ${request.fromDate} (Vehicle: ${existingAssignment.plateNo})`
+        message: `Driver "${selectedDriver}" is already assigned to another trip on ${newFromDate} from ${existingAssignment.fromTime} to ${existingAssignment.toTime}.`
       };
     }
 
@@ -110,6 +124,7 @@ const updateRequestStatus = (request, updateData) => {
     request.driver = (driver_name || driver)?.trim();
     request.vehicleType = vehicle_type || vehicleType;
     request.plateNo = (plate_no || plateNo)?.trim();
+    // Note: fromDate, fromTime, toTime are already stored in the request object upon creation
   } else if (finalStatus === "Declined") {
     request.reason = reason_for_decline || reason;
   }
@@ -138,19 +153,36 @@ app.get('/api/requests', (req, res) => {
   res.json(requests);
 });
 
-// Create request
+// Create a new request - NOW REQUIRES TIME FIELDS
 app.post('/api/requests', (req, res) => {
   try {
+    const { fromDate, fromTime, toTime, ...otherData } = req.body;
+
+    if (!fromDate) {
+      return res.status(400).json({ error: "fromDate is required" });
+    }
+    if (!fromTime) {
+      return res.status(400).json({ error: "fromTime is required" });
+    }
+    if (!toTime) {
+      return res.status(400).json({ error: "toTime is required" });
+    }
+
+    // Optional: Validate time format (HH:MM)
+    const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
+    if (!timeRegex.test(fromTime) || !timeRegex.test(toTime)) {
+      return res.status(400).json({ error: "fromTime and toTime must be in HH:MM format (e.g., 08:00, 17:30)" });
+    }
+
     const newRequest = {
       id: Date.now(),
-      ...req.body,
+      ...otherData,
+      fromDate, // Store the date
+      fromTime, // Store the start time
+      toTime,   // Store the end time
       status: "Pending",
       date: new Date().toISOString().split('T')[0]
     };
-
-    if (!newRequest.fromDate) {
-      return res.status(400).json({ error: "fromDate is required" });
-    }
 
     requests.push(newRequest);
 
@@ -424,15 +456,7 @@ try {
   console.warn('Auth router not loaded:', err.message);
 }
 
-// Profile Router
-try {
-  const profileRouter = require('./routes/profile');
-  app.use('/profile', profileRouter);
-} catch (err) {
-  console.warn('Profile router not loaded:', err.message);
-}
-
-// Dashboard Stats
+// === NEW: Dashboard Stats Endpoint ===
 app.get('/api/stats', (req, res) => {
   try {
     const totalRequests = requests.length;
@@ -522,7 +546,7 @@ app.get('/api/stats', (req, res) => {
   }
 });
 
-// Error Handlers
+// Error handlers
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err.stack);
   res.status(500).json({ error: 'Server error' });
@@ -532,4 +556,4 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(` Server running on port ${PORT}`));
