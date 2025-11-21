@@ -13,30 +13,32 @@ exports.getVehicles = async (req, res) => {
       return res.status(200).json([]);
     }
 
-    // Get plate numbers for querying assignments
-    const plateNos = vehicles.map(v => v.plateNo).filter(p => p && p.trim() !== '');
+    // Normalize plate numbers to uppercase for safe comparison
+    const plateNos = vehicles
+      .map(v => v.plateNo?.trim().toUpperCase())
+      .filter(p => p && p !== '');
 
     let assignmentMap = {};
 
     if (plateNos.length > 0) {
-      // Query: Get the latest accepted request per vehicle (even if trip hasn't started)
+      // ✅ FIXED: Case-insensitive plate matching
       const query = `
-        SELECT DISTINCT ON (plate_no)
-          plate_no,
+        SELECT DISTINCT ON (UPPER(TRIM(plate_no)))
+          UPPER(TRIM(plate_no)) AS plate_no_normalized,
           driver_name,
           passenger_names
         FROM tbl_requests
         WHERE 
-          plate_no = ANY($1)
+          UPPER(TRIM(plate_no)) = ANY($1)
           AND status = 'Accepted'
           AND driver_name IS NOT NULL
           AND TRIM(driver_name) != ''
-        ORDER BY plate_no, created_at DESC;
+        ORDER BY UPPER(TRIM(plate_no)), created_at DESC;
       `;
 
       const result = await pool.query(query, [plateNos]);
 
-      // Build a lookup map: plate_no → { driver, passengerCount }
+      // Build a lookup map: normalized plate → { driver, passengerCount }
       assignmentMap = {};
       result.rows.forEach(row => {
         let passengerCount = 1;
@@ -46,7 +48,7 @@ exports.getVehicles = async (req, res) => {
           // Handle comma-separated string
           passengerCount = String(row.passenger_names).split(',').length;
         }
-        assignmentMap[row.plate_no] = {
+        assignmentMap[row.plate_no_normalized] = {
           driver: row.driver_name.trim(),
           passengerCount: passengerCount
         };
@@ -55,7 +57,9 @@ exports.getVehicles = async (req, res) => {
 
     // Enrich each vehicle with real-time status
     const enrichedVehicles = vehicles.map(vehicle => {
-      const assignment = assignmentMap[vehicle.plateNo];
+      // Normalize vehicle plate for lookup
+      const normalizedPlate = vehicle.plateNo?.trim().toUpperCase() || '';
+      const assignment = assignmentMap[normalizedPlate];
       const isAssigned = !!assignment;
 
       // Determine real-time status
@@ -96,8 +100,11 @@ exports.createVehicle = async (req, res) => {
       return res.status(400).json({ error: 'Required fields missing' });
     }
 
+    // ✅ Enforce uppercase plate numbers
+    const plateNoNormalized = plateNo.trim().toUpperCase();
+
     const existing = await Vehicle.findOne({
-      where: { plateNo: plateNo.trim().toUpperCase(), archivedAt: null }
+      where: { plateNo: plateNoNormalized, archivedAt: null }
     });
 
     if (existing) {
@@ -106,7 +113,7 @@ exports.createVehicle = async (req, res) => {
 
     const newVehicle = await Vehicle.create({
       vehicleType,
-      plateNo: plateNo.trim().toUpperCase(),
+      plateNo: plateNoNormalized, // ✅ Always store uppercase
       capacity: parseInt(capacity),
       fuelType,
       fleetCard,
